@@ -28,6 +28,8 @@ namespace MiniCut
         static double TrackTop(int r) { double y = RULER; for (int i = 0; i < r; i++) y += TrackH[i]; return y; }
         static int RowAt(double y) { double t = RULER; for (int i = 0; i < TrackH.Length; i++) { t += TrackH[i]; if (y < t) return i; } return TrackH.Length - 1; }
         readonly AudioEngine audio = new();
+        readonly Dictionary<Seg, FrameworkElement> blocks = new();
+        readonly Dictionary<(string, int), ImageBrush> cellBrushes = new();
         Media dragging; Rectangle ghost; bool monitorPlaying;
         static readonly string Tmp = Ff.Cache;
         static readonly string[] Tabs_ = { "Multimedia", "Audio", "Texto", "Filtros", "Efectos", "Transiciones", "Ajuste" };
@@ -57,7 +59,8 @@ namespace MiniCut
             BuildDetails(); CanvasStyle(); ShowTab(0); RefreshDetails(); Redraw(); Sync(true);
             Log("Grade shader ok=" + Grade.Ok + " " + Grade.Error);
             // dev hook: MINICUT_AUTOPLAY=<project.minicut> loads it and starts playback
-            Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); ShowTab(0); Redraw(); if (Environment.GetEnvironmentVariable("MINICUT_SELECT") != null) Select(proj.Segs[0]); Play(); };
+            Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); ShowTab(0); Redraw(); if (Environment.GetEnvironmentVariable("MINICUT_SELECT") != null) Select(proj.Segs[0]); Play();
+            };
         }
 
         static Brush Br(string hex) => (Brush)new BrushConverter().ConvertFromString(hex);
@@ -325,7 +328,9 @@ namespace MiniCut
                 default: sel.Set(key, v, Rel); break;
             }
             var r = rows[key]; r.L.Text = $"{r.Label}   {v.ToString(r.Fmt, CultureInfo.InvariantCulture)}"; if (r.K != null) r.K.Content = sel.HasKf(key, Rel) ? "◆" : "◇";
-            Dirty();
+            // only what really changes on screen: speed moves the clip end, volume reshapes the waveform; everything else is just a re-sync
+            if (key == "speed") Dirty();
+            else { RebuildAudio(); Sync(!playing); if (key == "volume") RedrawBlock(sel); }
         }
 
         void ToggleKf(string key) { if (sel == null) return; Push(); sel.ToggleKf(key, Rel); RefreshDetails(); Dirty(); }
@@ -337,7 +342,7 @@ namespace MiniCut
 
         void Redraw()
         {
-            TL.Children.Clear(); ghost = null;
+            TL.Children.Clear(); ghost = null; blocks.Clear(); cellBrushes.Clear();
             double w = Math.Max(1200, (Total + 12) * Px); TL.Width = w; TL.Height = TrackTop(TrackNames.Length);
             int step = Px >= 80 ? 1 : Px >= 35 ? 2 : 5;
             for (int t = 0; t * Px < w; t += step)
@@ -347,9 +352,20 @@ namespace MiniCut
             }
             for (int r = 0; r < TrackNames.Length; r++)
             { var bg = new Rectangle { Width = w, Height = TrackH[r] - 2, Fill = Br(r % 2 == 0 ? "#15151a" : "#18181d") }; Canvas.SetTop(bg, TrackTop(r)); TL.Children.Add(bg); }
-            foreach (var sg in proj.Segs) TL.Children.Add(Block(sg));
+            foreach (var sg in proj.Segs) { var b = Block(sg); blocks[sg] = b; TL.Children.Add(b); }
             head = new Rectangle { Width = 2, Height = TL.Height, Fill = Br("#ffffff"), IsHitTestVisible = false }; Canvas.SetLeft(head, P * Px); TL.Children.Add(head);
             Clock.Text = $"{T(P)} / {T(Total)}"; PlayerInfo.Text = $"{proj.Canvas}  ·  {Opts.Size(proj.Canvas).w}×{Opts.Size(proj.Canvas).h}";
+        }
+
+        // live volume change (drag on the clip): keeps playing, takes effect in the mixer immediately
+        void SetVolumeLive(Seg sg, double v) { sg.Set("volume", v, Rel); RefreshDetails(); RebuildAudio(); Sync(false); }
+
+        // rebuild a single clip block (volume/waveform change) without touching the rest of the timeline
+        void RedrawBlock(Seg s)
+        {
+            if (!blocks.TryGetValue(s, out var old)) { Redraw(); return; }
+            int i = TL.Children.IndexOf(old); if (i < 0) { Redraw(); return; }
+            var nb = Block(s); blocks[s] = nb; TL.Children[i] = nb;
         }
 
         static string Db(double vol) => vol <= 0.001 ? "-∞ dB" : $"{20 * Math.Log10(vol):+0.0;-0.0;0.0} dB";
@@ -371,7 +387,8 @@ namespace MiniCut
                     for (double x = 0; x < w; x += cellW)
                     {
                         int idx = Math.Clamp((int)((sg.Src + (x + cellW / 2) / Px * sg.Speed) / m.StripStep), 0, m.StripN - 1);
-                        var r = new Rectangle { Width = cellW, Height = thumbH, Fill = new ImageBrush(sprite) { Viewbox = new Rect(idx / (double)m.StripN, 0, 1.0 / m.StripN, 1), Stretch = Stretch.Fill } };
+                        if (!cellBrushes.TryGetValue((m.Strip, idx), out var br)) { br = new ImageBrush(sprite) { Viewbox = new Rect(idx / (double)m.StripN, 0, 1.0 / m.StripN, 1), Stretch = Stretch.Fill }; br.Freeze(); cellBrushes[(m.Strip, idx)] = br; }
+                        var r = new Rectangle { Width = cellW, Height = thumbH, Fill = br };
                         Canvas.SetLeft(r, x); inner.Children.Add(r);
                     }
                 }
@@ -412,11 +429,10 @@ namespace MiniCut
                 {
                     if (!drag) return;
                     var v = Math.Round(Math.Clamp(2 * (1 - (e.GetPosition(g).Y - wy) / wh), 0, 2), 2); if (Math.Abs(v - 1) < 0.04) v = 1;
-                    sg.Set("volume", v, Rel); double ny = wy + wh * (1 - v / 2);
+                    SetVolumeLive(sg, v); double ny = wy + wh * (1 - v / 2);
                     Canvas.SetTop(line, ny - 1); lbl.Text = Db(v); Canvas.SetTop(lbl, Math.Clamp(ny - 16, 0, h - 14)); hit.Margin = new Thickness(0, ny - 7, 0, 0);
-                    RefreshDetails(); RebuildAudio(); Sync(false);
                 };
-                hit.MouseLeftButtonUp += (_, _) => { if (!drag) return; drag = false; hit.ReleaseMouseCapture(); Dirty(); };
+                hit.MouseLeftButtonUp += (_, _) => { if (!drag) return; drag = false; hit.ReleaseMouseCapture(); RebuildAudio(); Sync(false); RedrawBlock(sg); };
                 g.Children.Add(hit);
             }
 
@@ -523,7 +539,8 @@ namespace MiniCut
                 }
                 if (l.Me == null || !l.Ready) continue;
                 var me = l.Me; double target = s.Src + rel * s.Speed;
-                me.SpeedRatio = s.Speed; me.Volume = active && !UsesEngine(s) ? Math.Min(1, s.Get("volume", rel) * FadeF(s, rel)) : 0;
+                me.SpeedRatio = s.Speed; bool viaMixer = UsesEngine(s); me.IsMuted = viaMixer || !active; // the mixer plays this clip; MediaElement only supplies the picture
+                me.Volume = active && !viaMixer ? Math.Min(1, s.Get("volume", rel) * FadeF(s, rel)) : 0;
                 if (!active)
                 {
                     if (l.Playing) { me.Pause(); l.Playing = false; }
@@ -579,7 +596,7 @@ namespace MiniCut
         void Tick()
         {
             if (!playing) return;
-            P = Math.Max(p0, p0 + clock.Elapsed.TotalSeconds - (audio.Ready ? 0.1 : 0)); // video waits for the audio device latency
+            P = Math.Max(p0, p0 + clock.Elapsed.TotalSeconds - (audio.Ready ? AudioEngine.Latency : 0)); // video waits for the audio device latency
             if (P >= Total) { P = Total; StopPlay(); Redraw(); return; }
             Sync(false); Canvas.SetLeft(head, P * Px); Clock.Text = $"{T(P)} / {T(Total)}";
             if (P * Px > TlScroll.HorizontalOffset + TlScroll.ViewportWidth - 40) TlScroll.ScrollToHorizontalOffset(P * Px - 40);
@@ -650,6 +667,17 @@ namespace MiniCut
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 
