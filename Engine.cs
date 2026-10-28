@@ -106,11 +106,23 @@ namespace MiniCut
             return (n, step);
         }
 
-        // 20 peaks per second (0-255) from the audio track, for the waveform
-        public static byte[] Peaks(string src)
+        public static string Raw(string path) => System.IO.Path.Combine(Cache, "au_" + Key(path) + ".raw");
+
+        // decoded 16-bit stereo 44.1k PCM, read in real time by the preview mixer
+        public static bool MakeRaw(string src)
         {
-            var p = Process.Start(new ProcessStartInfo(Bin("ffmpeg"), $"-v error -nostdin -i \"{src}\" -vn -ac 1 -ar 8000 -f s16le -") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true });
-            var err = p.StandardError.ReadToEndAsync(); var list = new List<byte>(); var buf = new byte[800]; var s = p.StandardOutput.BaseStream;
+            var raw = Raw(src); if (File.Exists(raw)) return true;
+            var tmp = raw + ".part";
+            Exec("ffmpeg", $"-y -v error -nostdin -i \"{src}\" -vn -ac 2 -ar 44100 -f s16le \"{tmp}\"");
+            if (File.Exists(tmp) && new FileInfo(tmp).Length > 0) { File.Move(tmp, raw, true); return true; }
+            return false;
+        }
+
+        // 20 peaks per second (0-255) for the waveform, from the decoded PCM
+        public static byte[] Peaks(string raw)
+        {
+            var list = new List<byte>(); var buf = new byte[2205 * 4];
+            using var s = new FileStream(raw, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             while (true)
             {
                 int got = 0; while (got < buf.Length) { int r = s.Read(buf, got, buf.Length - got); if (r <= 0) break; got += r; }
@@ -118,9 +130,8 @@ namespace MiniCut
                 int mx = 0; for (int i = 0; i + 1 < got; i += 2) { int v = Math.Abs((short)(buf[i] | (buf[i + 1] << 8))); if (v > mx) mx = v; }
                 list.Add((byte)Math.Min(255, mx / 128)); if (got < buf.Length) break;
             }
-            p.WaitForExit(); return list.ToArray();
+            return list.ToArray();
         }
-
         public static string Thumb(string path) => System.IO.Path.Combine(Cache, "th_" + Key(path) + ".png");
 
         // PATH first, then winget's install folder (a fresh install is not on an already-open terminal's PATH); resolved once
@@ -245,6 +256,7 @@ namespace MiniCut
         }
     }
 }
+
 
 
 

@@ -17,7 +17,7 @@ using Microsoft.Win32;
 
 namespace MiniCut
 {
-    public class Media { public string Path, Kind; public double Dur; public bool HasAudio; public string Thumb, Strip; public int StripN; public double StripStep, TileW; public byte[] Peaks; }
+    public class Media { public string Path, Kind; public double Dur; public bool HasAudio; public string Thumb, Strip; public int StripN; public double StripStep, TileW; public byte[] Peaks; public string Raw; }
     class RowUi { public Slider S; public TextBlock L; public Button K; public string Label, Fmt; }
 
     public partial class MainWindow : Window
@@ -27,6 +27,7 @@ namespace MiniCut
         static readonly double[] TrackH = { 36, 64, 64, 48, 48 };
         static double TrackTop(int r) { double y = RULER; for (int i = 0; i < r; i++) y += TrackH[i]; return y; }
         static int RowAt(double y) { double t = RULER; for (int i = 0; i < TrackH.Length; i++) { t += TrackH[i]; if (y < t) return i; } return TrackH.Length - 1; }
+        readonly AudioEngine audio = new();
         Media dragging; Rectangle ghost; bool monitorPlaying;
         static readonly string Tmp = Ff.Cache;
         static readonly string[] Tabs_ = { "Multimedia", "Audio", "Texto", "Filtros", "Efectos", "Transiciones", "Ajuste" };
@@ -49,7 +50,7 @@ namespace MiniCut
         {
             InitializeComponent(); Directory.CreateDirectory(Tmp);
             foreach (var old in Directory.GetFiles(Tmp, "p*_*.mp4").Concat(Directory.GetFiles(Tmp, "frame_*.png"))) try { File.Delete(old); } catch { }
-            playTimer.Tick += (_, _) => Tick();
+            playTimer.Tick += (_, _) => Tick(); audio.Init();
             TL.AllowDrop = true; TL.DragOver += TlDragOver; TL.DragLeave += (_, _) => { if (ghost != null) ghost.Visibility = Visibility.Collapsed; }; TL.Drop += TlDrop;
             foreach (var c in Opts.Canvases) { var cc = c; var b = new Button { Content = c, Padding = new Thickness(8, 4, 8, 4), Tag = c }; b.Click += (_, _) => { Push(); proj.Canvas = cc; CanvasStyle(); Dirty(); }; CanvasBtns.Children.Add(b); }
             for (int i = 0; i < TrackNames.Length; i++) TrackLabels.Children.Add(new TextBlock { Text = TrackNames[i], Height = TrackH[i], Foreground = (Brush)new BrushConverter().ConvertFromString("#8d8d98"), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
@@ -116,10 +117,10 @@ namespace MiniCut
                 await Task.Run(() =>
                 {
                     if (m.Kind == "video") { var (n, step) = Ff.MakeStrip(m.Path, m.Dur); if (File.Exists(Ff.Strip(m.Path))) { m.StripN = n; m.StripStep = step; m.Strip = Ff.Strip(m.Path); } }
-                    if (m.Kind == "audio" || m.HasAudio) m.Peaks = Ff.Peaks(m.Path);
+                    if ((m.Kind == "audio" || m.HasAudio) && Ff.MakeRaw(m.Path)) { m.Raw = Ff.Raw(m.Path); m.Peaks = Ff.Peaks(m.Raw); }
                 });
                 if (m.Strip != null) m.TileW = ((BitmapSource)Thumb(m.Strip)).PixelWidth / (double)m.StripN;
-                Redraw();
+                Redraw(); RebuildAudio();
             }
         }
 
@@ -413,7 +414,7 @@ namespace MiniCut
                     var v = Math.Round(Math.Clamp(2 * (1 - (e.GetPosition(g).Y - wy) / wh), 0, 2), 2); if (Math.Abs(v - 1) < 0.04) v = 1;
                     sg.Set("volume", v, Rel); double ny = wy + wh * (1 - v / 2);
                     Canvas.SetTop(line, ny - 1); lbl.Text = Db(v); Canvas.SetTop(lbl, Math.Clamp(ny - 16, 0, h - 14)); hit.Margin = new Thickness(0, ny - 7, 0, 0);
-                    RefreshDetails(); Sync(false);
+                    RefreshDetails(); RebuildAudio(); Sync(false);
                 };
                 hit.MouseLeftButtonUp += (_, _) => { if (!drag) return; drag = false; hit.ReleaseMouseCapture(); Dirty(); };
                 g.Children.Add(hit);
@@ -522,7 +523,7 @@ namespace MiniCut
                 }
                 if (l.Me == null || !l.Ready) continue;
                 var me = l.Me; double target = s.Src + rel * s.Speed;
-                me.SpeedRatio = s.Speed; me.Volume = active ? Math.Min(1, s.Get("volume", rel) * FadeF(s, rel)) : 0;
+                me.SpeedRatio = s.Speed; me.Volume = active && !UsesEngine(s) ? Math.Min(1, s.Get("volume", rel) * FadeF(s, rel)) : 0;
                 if (!active)
                 {
                     if (l.Playing) { me.Pause(); l.Playing = false; }
@@ -548,13 +549,22 @@ namespace MiniCut
         {
             CloseMonitor(null, null);
             P = Math.Max(0, t); if (head != null) Canvas.SetLeft(head, P * Px); Clock.Text = $"{T(P)} / {T(Total)}";
-            if (playing) { p0 = P; clock.Restart(); }
+            if (playing) { p0 = P; clock.Restart(); audio.Seek(P); }
             if (sel != null) RefreshDetails();
             Sync(true);
         }
         void ToStart(object s, RoutedEventArgs e) => Seek(0);
 
-        void Dirty() { if (playing) StopPlay(); Redraw(); Sync(true); }
+        // edits keep playing (like CapCut); only a stopped player re-seeks everything
+        void Dirty() { Redraw(); RebuildAudio(); Sync(!playing); }
+
+        // clips whose audio is decoded and at normal speed go through the mixer (gain up to +6 dB); the rest fall back to MediaElement.Volume
+        void RebuildAudio()
+        {
+            audio.SetClips(proj.Segs.Where(s => s.Speed == 1 && (s.Kind == "audio" || (s.Kind == "video" && s.HasAudio)))
+                .Select(s => (s, m: media.FirstOrDefault(x => x.Path == s.Path))).Where(x => x.m?.Raw != null).Select(x => AClip.From(x.s, x.m.Raw)).ToArray());
+        }
+        bool UsesEngine(Seg s) => audio.Ready && s.Speed == 1 && media.Any(m => m.Path == s.Path && m.Raw != null);
 
         void Play(object s = null, RoutedEventArgs e = null)
         {
@@ -562,14 +572,14 @@ namespace MiniCut
             if (playing) { StopPlay(); return; }
             if (proj.Segs.Count == 0) return;
             if (P >= Total - .05) P = 0;
-            playing = true; p0 = P; clock.Restart(); PlayBtn.Content = "❚❚"; Busy.Text = ""; Sync(true); playTimer.Start();
+            playing = true; p0 = P; clock.Restart(); PlayBtn.Content = "❚❚"; Busy.Text = ""; RebuildAudio(); audio.Start(P); Sync(true); playTimer.Start();
         }
-        void StopPlay() { playing = false; playTimer.Stop(); PlayBtn.Content = "▶"; Sync(true); }
+        void StopPlay() { playing = false; audio.Stop(); playTimer.Stop(); PlayBtn.Content = "▶"; Sync(true); }
 
         void Tick()
         {
             if (!playing) return;
-            P = p0 + clock.Elapsed.TotalSeconds;
+            P = Math.Max(p0, p0 + clock.Elapsed.TotalSeconds - (audio.Ready ? 0.1 : 0)); // video waits for the audio device latency
             if (P >= Total) { P = Total; StopPlay(); Redraw(); return; }
             Sync(false); Canvas.SetLeft(head, P * Px); Clock.Text = $"{T(P)} / {T(Total)}";
             if (P * Px > TlScroll.HorizontalOffset + TlScroll.ViewportWidth - 40) TlScroll.ScrollToHorizontalOffset(P * Px - 40);
@@ -640,6 +650,7 @@ namespace MiniCut
         }
     }
 }
+
 
 
 

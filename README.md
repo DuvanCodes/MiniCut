@@ -17,6 +17,7 @@ dotnet run
 - 5 pistas (texto, 2 de video, 2 de audio), arrastrar/recortar/dividir, imán a bordes
 - Clips con tira de miniaturas por escenas y forma de onda de audio; línea de volumen arrastrable en dB (clip seleccionado)
 - Keyframes (posición, escala, rotación, volumen) con interpolación lineal
+- Mezclador de audio propio (NAudio): el volumen en dB, keyframes y fundidos se oyen en la vista previa igual que en la exportación
 - Filtros, efectos, ajustes de color, velocidad, volumen, fundidos, texto
 - Deshacer/rehacer, guardar/abrir proyectos `.minicut`
 - Exportación MP4 con ffmpeg (formatos 16:9, 9:16, 1:1, 4:3)
@@ -31,4 +32,5 @@ MiniCut.exe --frame proyecto.minicut salida.png <segundos>
 - `Engine.cs` — modelo (Seg, Kf, Project) y generador del grafo de ffmpeg para exportar
 - `Grade.cs` — shader de color/efectos en tiempo real
 - `MainWindow.xaml(.cs)` — interfaz, línea de tiempo, compositor en vivo
+
 
