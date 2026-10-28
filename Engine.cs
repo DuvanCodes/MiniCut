@@ -212,6 +212,14 @@ namespace MiniCut
             g.Append($"[{prev}]format=yuv420p[vout]");
             if (audio)
             {
+                // audio is read from the same decoded PCM the live preview mixes (exact sample positions, identical to what you heard);
+                // asking ffmpeg to -ss into some AAC files shifts the audio by ~1 frame relative to a full decode
+                var aidx = new Dictionary<Seg, int>();
+                foreach (var s in p.Segs.Where(s => (s.Kind == "video" && s.HasAudio) || s.Kind == "audio"))
+                {
+                    if (MakeRaw(s.Path)) { aidx[s] = n++; inp.Append($"-f s16le -ar 44100 -ac 2 -ss {F(s.Src)} -t {F(s.Dur * s.Speed)} -i \"{Raw(s.Path)}\" "); }
+                    else aidx[s] = idx[s];
+                }
                 var labels = new List<string>();
                 foreach (var s in p.Segs.Where(s => (s.Kind == "video" && s.HasAudio) || s.Kind == "audio"))
                 {
@@ -222,7 +230,7 @@ namespace MiniCut
                     if (s.FadeIn > 0) a.Add($"afade=t=in:st=0:d={F(s.FadeIn)}");
                     if (s.FadeOut > 0) a.Add($"afade=t=out:st={F(Math.Max(0, s.Dur - s.FadeOut))}:d={F(s.FadeOut)}");
                     a.Add($"adelay=delays={(int)(s.Start * 1000)}:all=1");
-                    g.Append($";[{idx[s]}:a]{string.Join(",", a)}[a{idx[s]}]"); labels.Add($"[a{idx[s]}]");
+                    g.Append($";[{aidx[s]}:a]{string.Join(",", a)}[a{aidx[s]}]"); labels.Add($"[a{aidx[s]}]");
                 }
                 g.Append(labels.Count == 0 ? $";anullsrc=r=44100:cl=stereo:d={F(total)}[aout]" : $";{string.Concat(labels)}amix=inputs={labels.Count}:normalize=0:duration=longest[aout]");
             }
@@ -256,6 +264,7 @@ namespace MiniCut
         }
     }
 }
+
 
 
 
