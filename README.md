@@ -13,7 +13,9 @@ dotnet run
 
 ## Qué tiene
 - Vista previa en tiempo real: reproduce los archivos originales y compone en un lienzo, con filtros y efectos por shader de GPU (HLSL compilado con D3DCompile)
+- Panel de medios: clic = vista previa del medio; arrastrarlo a la línea de tiempo = editarlo
 - 5 pistas (texto, 2 de video, 2 de audio), arrastrar/recortar/dividir, imán a bordes
+- Clips con tira de miniaturas por escenas y forma de onda de audio; línea de volumen arrastrable en dB (clip seleccionado)
 - Keyframes (posición, escala, rotación, volumen) con interpolación lineal
 - Filtros, efectos, ajustes de color, velocidad, volumen, fundidos, texto
 - Deshacer/rehacer, guardar/abrir proyectos `.minicut`
@@ -29,3 +31,4 @@ MiniCut.exe --frame proyecto.minicut salida.png <segundos>
 - `Engine.cs` — modelo (Seg, Kf, Project) y generador del grafo de ffmpeg para exportar
 - `Grade.cs` — shader de color/efectos en tiempo real
 - `MainWindow.xaml(.cs)` — interfaz, línea de tiempo, compositor en vivo
+

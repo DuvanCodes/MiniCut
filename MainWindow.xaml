@@ -13,7 +13,7 @@
     <Style x:Key="Lbl" TargetType="TextBlock"><Setter Property="Foreground" Value="#8d8d98"/><Setter Property="FontSize" Value="11"/></Style>
   </Window.Resources>
   <Grid>
-    <Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="*"/><RowDefinition Height="40"/><RowDefinition Height="270"/></Grid.RowDefinitions>
+    <Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="*"/><RowDefinition Height="40"/><RowDefinition Height="312"/></Grid.RowDefinitions>
 
     <Border Background="#141417" BorderBrush="#222227" BorderThickness="0,0,0,1">
       <Grid Margin="12,0">
@@ -43,6 +43,12 @@
         <Border Background="Black" CornerRadius="8" ClipToBounds="True">
           <Grid>
             <Viewbox Stretch="Uniform"><Canvas x:Name="Stage" Width="1280" Height="720" Background="Black" ClipToBounds="True"/></Viewbox>
+            <Grid x:Name="Monitor" Visibility="Collapsed" Background="Black">
+              <MediaElement x:Name="MonitorPlayer" LoadedBehavior="Manual" UnloadedBehavior="Manual" Stretch="Uniform" Volume="1"/>
+              <Image x:Name="MonitorImg" Stretch="Uniform"/>
+              <TextBlock x:Name="MonitorLbl" Foreground="#b8b8c2" FontSize="11" Margin="12,10" VerticalAlignment="Top" HorizontalAlignment="Left"/>
+              <Button Content="✕" Click="CloseMonitor" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8" Padding="8,2"/>
+            </Grid>
             <TextBlock x:Name="Busy" Foreground="#25f4ee" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="14"/>
           </Grid>
         </Border>
@@ -82,5 +88,6 @@
     </Grid>
   </Grid>
 </Window>
+
 
 

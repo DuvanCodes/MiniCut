@@ -17,13 +17,17 @@ using Microsoft.Win32;
 
 namespace MiniCut
 {
-    public class Media { public string Path, Kind; public double Dur; public bool HasAudio; public string Thumb; }
+    public class Media { public string Path, Kind; public double Dur; public bool HasAudio; public string Thumb, Strip; public int StripN; public double StripStep, TileW; public byte[] Peaks; }
     class RowUi { public Slider S; public TextBlock L; public Button K; public string Label, Fmt; }
 
     public partial class MainWindow : Window
     {
         static readonly string[] TrackNames = { "Texto", "Vídeo 2", "Vídeo 1", "Audio 1", "Audio 2" };
-        const double TH = 46, RULER = 26;
+        const double RULER = 26;
+        static readonly double[] TrackH = { 36, 64, 64, 48, 48 };
+        static double TrackTop(int r) { double y = RULER; for (int i = 0; i < r; i++) y += TrackH[i]; return y; }
+        static int RowAt(double y) { double t = RULER; for (int i = 0; i < TrackH.Length; i++) { t += TrackH[i]; if (y < t) return i; } return TrackH.Length - 1; }
+        Media dragging; Rectangle ghost; bool monitorPlaying;
         static readonly string Tmp = Ff.Cache;
         static readonly string[] Tabs_ = { "Multimedia", "Audio", "Texto", "Filtros", "Efectos", "Transiciones", "Ajuste" };
 
@@ -46,12 +50,13 @@ namespace MiniCut
             InitializeComponent(); Directory.CreateDirectory(Tmp);
             foreach (var old in Directory.GetFiles(Tmp, "p*_*.mp4").Concat(Directory.GetFiles(Tmp, "frame_*.png"))) try { File.Delete(old); } catch { }
             playTimer.Tick += (_, _) => Tick();
+            TL.AllowDrop = true; TL.DragOver += TlDragOver; TL.DragLeave += (_, _) => { if (ghost != null) ghost.Visibility = Visibility.Collapsed; }; TL.Drop += TlDrop;
             foreach (var c in Opts.Canvases) { var cc = c; var b = new Button { Content = c, Padding = new Thickness(8, 4, 8, 4), Tag = c }; b.Click += (_, _) => { Push(); proj.Canvas = cc; CanvasStyle(); Dirty(); }; CanvasBtns.Children.Add(b); }
-            for (int i = 0; i < TrackNames.Length; i++) TrackLabels.Children.Add(new TextBlock { Text = TrackNames[i], Height = TH, Foreground = (Brush)new BrushConverter().ConvertFromString("#8d8d98"), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
+            for (int i = 0; i < TrackNames.Length; i++) TrackLabels.Children.Add(new TextBlock { Text = TrackNames[i], Height = TrackH[i], Foreground = (Brush)new BrushConverter().ConvertFromString("#8d8d98"), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
             BuildDetails(); CanvasStyle(); ShowTab(0); RefreshDetails(); Redraw(); Sync(true);
             Log("Grade shader ok=" + Grade.Ok + " " + Grade.Error);
             // dev hook: MINICUT_AUTOPLAY=<project.minicut> loads it and starts playback
-            Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); ShowTab(0); Redraw(); Play(); };
+            Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); ShowTab(0); Redraw(); if (Environment.GetEnvironmentVariable("MINICUT_SELECT") != null) Select(proj.Segs[0]); Play(); };
         }
 
         static Brush Br(string hex) => (Brush)new BrushConverter().ConvertFromString(hex);
@@ -100,6 +105,22 @@ namespace MiniCut
             Busy.Text = "Importando…";
             var res = await Task.WhenAll(todo.Select(f => Task.Run(() => Probe(f))));
             media.AddRange(res); Busy.Text = "";
+            _ = Visuals(res.ToList());
+        }
+
+        // filmstrip + waveform, generated in the background; the timeline redraws as each media finishes
+        async Task Visuals(List<Media> ms)
+        {
+            foreach (var m in ms)
+            {
+                await Task.Run(() =>
+                {
+                    if (m.Kind == "video") { var (n, step) = Ff.MakeStrip(m.Path, m.Dur); if (File.Exists(Ff.Strip(m.Path))) { m.StripN = n; m.StripStep = step; m.Strip = Ff.Strip(m.Path); } }
+                    if (m.Kind == "audio" || m.HasAudio) m.Peaks = Ff.Peaks(m.Path);
+                });
+                if (m.Strip != null) m.TileW = ((BitmapSource)Thumb(m.Strip)).PixelWidth / (double)m.StripN;
+                Redraw();
+            }
         }
 
         async void Import(object s = null, RoutedEventArgs e = null)
@@ -110,14 +131,48 @@ namespace MiniCut
         }
         double TrackEnd(int tr) => proj.Segs.Where(x => x.Track == tr).Select(x => x.End).DefaultIfEmpty(0).Max();
 
-        void AddMedia(Media m)
+        void AddMediaAt(Media m, double start, int row)
         {
-            Push();
-            int tr = m.Kind == "audio" ? 3 : 2;
-            var sg = new Seg { Kind = m.Kind, Path = m.Path, HasAudio = m.HasAudio, SrcLen = m.Dur, Dur = m.Dur, Track = tr, Start = TrackEnd(tr) };
+            Push(); CloseMonitor(null, null);
+            if (!Compatible(m.Kind, row)) row = m.Kind == "audio" ? 3 : 2;
+            var sg = new Seg { Kind = m.Kind, Path = m.Path, HasAudio = m.HasAudio, SrcLen = m.Dur, Dur = m.Dur, Track = row, Start = Math.Max(0, start) };
             proj.Segs.Add(sg); Select(sg); Dirty();
         }
 
+        // ---------- source monitor: click on a media = preview only; dragging it to the timeline is what edits ----------
+        void PreviewMedia(Media m)
+        {
+            if (playing) StopPlay();
+            Monitor.Visibility = Visibility.Visible; MonitorImg.Source = null; MonitorPlayer.Source = null; monitorPlaying = false;
+            MonitorLbl.Text = (m.Kind == "audio" ? "♪ " : "") + "Vista previa · " + Path.GetFileName(m.Path) + "   — arrástralo a la línea de tiempo para editarlo";
+            if (m.Kind == "image") MonitorImg.Source = Img(m.Path);
+            else { MonitorPlayer.Source = new Uri(m.Path); MonitorPlayer.Play(); monitorPlaying = true; }
+        }
+        void CloseMonitor(object s, RoutedEventArgs e)
+        {
+            if (Monitor.Visibility != Visibility.Visible) return;
+            MonitorPlayer.Stop(); MonitorPlayer.Source = null; MonitorImg.Source = null; Monitor.Visibility = Visibility.Collapsed; monitorPlaying = false;
+        }
+        void ToggleMonitor() { if (monitorPlaying) MonitorPlayer.Pause(); else MonitorPlayer.Play(); monitorPlaying = !monitorPlaying; }
+
+        // ---------- drag from media pool to the timeline ----------
+        void TlDragOver(object s, DragEventArgs e)
+        {
+            if (dragging == null) return;
+            e.Effects = DragDropEffects.Copy; e.Handled = true;
+            var p = e.GetPosition(TL); int row = RowAt(p.Y); if (!Compatible(dragging.Kind, row)) row = dragging.Kind == "audio" ? 3 : 2;
+            if (ghost == null) ghost = new Rectangle { Fill = Br("#5525f4ee"), Stroke = Br("#25f4ee"), StrokeThickness = 1, RadiusX = 5, RadiusY = 5, IsHitTestVisible = false };
+            if (!TL.Children.Contains(ghost)) TL.Children.Add(ghost);
+            ghost.Visibility = Visibility.Visible; ghost.Width = Math.Max(12, dragging.Dur * Px); ghost.Height = TrackH[row] - 6;
+            Canvas.SetLeft(ghost, Math.Max(0, p.X)); Canvas.SetTop(ghost, TrackTop(row) + 2);
+        }
+        void TlDrop(object s, DragEventArgs e)
+        {
+            if (ghost != null) ghost.Visibility = Visibility.Collapsed;
+            if (dragging == null) return;
+            var p = e.GetPosition(TL); var m = dragging; dragging = null;
+            AddMediaAt(m, p.X / Px, RowAt(p.Y)); e.Handled = true;
+        }
         void AddText(string txt, int size, string color)
         {
             Push(); var (_, H) = Opts.Size(proj.Canvas);
@@ -138,7 +193,7 @@ namespace MiniCut
             {
                 case 0: case 1:
                     var imp = Card(i == 0 ? "＋ Importar" : "＋ Audio", "", null, "#26262b", () => Import()); LeftBody.Children.Add(imp);
-                    foreach (var m in media.Where(m => i == 0 ? m.Kind != "audio" : m.Kind == "audio")) { var mm = m; LeftBody.Children.Add(Card(Path.GetFileName(m.Path), m.Kind == "image" ? "imagen" : T(m.Dur), m.Thumb, "#1d1d22", () => AddMedia(mm))); }
+                    foreach (var m in media.Where(m => i == 0 ? m.Kind != "audio" : m.Kind == "audio")) { var mm = m; LeftBody.Children.Add(Card(Path.GetFileName(m.Path), m.Kind == "image" ? "imagen" : T(m.Dur), m.Thumb, "#1d1d22", () => PreviewMedia(mm), mm)); }
                     break;
                 case 2:
                     LeftBody.Children.Add(Card("Texto", "predeterminado", null, "#3a3320", () => AddText("Texto", 64, "white")));
@@ -162,7 +217,7 @@ namespace MiniCut
         static string Hue(string n) { var h = Math.Abs(n.GetHashCode()) % 360; var c = new HslToRgb(h); return c.Hex; }
         record HslToRgb(int H) { public string Hex { get { double s = .35, l = .25, a = s * Math.Min(l, 1 - l); double f(int nn) { var k = (nn + H / 30.0) % 12; return l - a * Math.Max(-1, Math.Min(Math.Min(k - 3, 9 - k), 1)); } return $"#{(int)(f(0) * 255):x2}{(int)(f(8) * 255):x2}{(int)(f(4) * 255):x2}"; } } }
 
-        Button Card(string title, string sub, string thumb, string bg, Action click)
+        Button Card(string title, string sub, string thumb, string bg, Action click, Media drag = null)
         {
             var st = new StackPanel { Width = 108 };
             var box = new Border { Height = 66, CornerRadius = new CornerRadius(4), Background = Br(bg), ClipToBounds = true };
@@ -171,7 +226,20 @@ namespace MiniCut
             st.Children.Add(box);
             st.Children.Add(new TextBlock { Text = title, FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 4, 0, 0) });
             st.Children.Add(new TextBlock { Text = sub, Style = (Style)FindResource("Lbl") });
-            var b = new Button { Content = st, Padding = new Thickness(4), Margin = new Thickness(0, 0, 6, 6), Background = Br("transparent") }; b.Click += (_, _) => click(); return b;
+            var b = new Button { Content = st, Padding = new Thickness(4), Margin = new Thickness(0, 0, 6, 6), Background = Br("transparent") }; b.Click += (_, _) => click();
+            if (drag != null)
+            {
+                Point? down = null; b.ToolTip = "Clic: vista previa · Arrastra a la línea de tiempo para editar";
+                b.PreviewMouseLeftButtonDown += (_, e) => down = e.GetPosition(b);
+                b.PreviewMouseLeftButtonUp += (_, _) => down = null;
+                b.PreviewMouseMove += (_, e) =>
+                {
+                    if (down == null || e.LeftButton != MouseButtonState.Pressed) return;
+                    var p = e.GetPosition(b); if (Math.Abs(p.X - down.Value.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(p.Y - down.Value.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+                    down = null; dragging = drag; DragDrop.DoDragDrop(b, new DataObject("minicut-media", drag.Path), DragDropEffects.Copy); dragging = null; if (ghost != null) ghost.Visibility = Visibility.Collapsed;
+                };
+            }
+            return b;
         }
 
         // applies a change to the selected clip
@@ -268,8 +336,8 @@ namespace MiniCut
 
         void Redraw()
         {
-            TL.Children.Clear();
-            double w = Math.Max(1200, (Total + 12) * Px); TL.Width = w; TL.Height = RULER + TH * TrackNames.Length;
+            TL.Children.Clear(); ghost = null;
+            double w = Math.Max(1200, (Total + 12) * Px); TL.Width = w; TL.Height = TrackTop(TrackNames.Length);
             int step = Px >= 80 ? 1 : Px >= 35 ? 2 : 5;
             for (int t = 0; t * Px < w; t += step)
             {
@@ -277,28 +345,84 @@ namespace MiniCut
                 var tx = new TextBlock { Text = T(t).Substring(0, T(t).Length - 2), FontSize = 10, Foreground = Br("#8d8d98") }; Canvas.SetLeft(tx, t * Px + 3); Canvas.SetTop(tx, 4); TL.Children.Add(tx);
             }
             for (int r = 0; r < TrackNames.Length; r++)
-            { var bg = new Rectangle { Width = w, Height = TH - 2, Fill = Br(r % 2 == 0 ? "#15151a" : "#18181d") }; Canvas.SetTop(bg, RULER + r * TH); TL.Children.Add(bg); }
+            { var bg = new Rectangle { Width = w, Height = TrackH[r] - 2, Fill = Br(r % 2 == 0 ? "#15151a" : "#18181d") }; Canvas.SetTop(bg, TrackTop(r)); TL.Children.Add(bg); }
             foreach (var sg in proj.Segs) TL.Children.Add(Block(sg));
             head = new Rectangle { Width = 2, Height = TL.Height, Fill = Br("#ffffff"), IsHitTestVisible = false }; Canvas.SetLeft(head, P * Px); TL.Children.Add(head);
             Clock.Text = $"{T(P)} / {T(Total)}"; PlayerInfo.Text = $"{proj.Canvas}  ·  {Opts.Size(proj.Canvas).w}×{Opts.Size(proj.Canvas).h}";
         }
 
+        static string Db(double vol) => vol <= 0.001 ? "-∞ dB" : $"{20 * Math.Log10(vol):+0.0;-0.0;0.0} dB";
+
+        // clip block: filmstrip of scene thumbnails on top, audio waveform below with a draggable volume line (like CapCut)
         FrameworkElement Block(Seg sg)
         {
-            var g = new Grid { Width = Math.Max(12, sg.Dur * Px), Height = TH - 6, Cursor = Cursors.SizeAll, ToolTip = sg.Name };
-            var bd = new Border { CornerRadius = new CornerRadius(5), Background = Br(KindColor(sg.Kind)), BorderBrush = Br(sg == sel ? "#25f4ee" : "transparent"), BorderThickness = new Thickness(sg == sel ? 2 : 0), ClipToBounds = true };
+            double h = TrackH[sg.Track] - 6, w = Math.Max(12, sg.Dur * Px);
+            var g = new Grid { Width = w, Height = h, Cursor = Cursors.SizeAll, ToolTip = sg.Name };
+            g.Children.Add(new Border { CornerRadius = new CornerRadius(5), Background = Br(KindColor(sg.Kind)) });
             var m = media.FirstOrDefault(x => x.Path == sg.Path);
-            if (m?.Thumb != null) { var im = Thumb(m.Thumb); var bw = ((BitmapSource)im).PixelWidth * (TH - 6) / 90.0; bd.Child = new Rectangle { Opacity = .5, Fill = new ImageBrush(im) { TileMode = TileMode.Tile, Stretch = Stretch.Fill, Viewport = new Rect(0, 0, bw, TH - 6), ViewportUnits = BrushMappingMode.Absolute } }; }
-            g.Children.Add(bd);
-            g.Children.Add(new TextBlock { Text = (sg.Kind == "audio" ? "♪ " : "") + sg.Name, Foreground = Brushes.White, FontSize = 10, Margin = new Thickness(6, 3, 6, 0), TextTrimming = TextTrimming.CharacterEllipsis, IsHitTestVisible = false });
-            var kc = new Canvas { IsHitTestVisible = false };
-            foreach (var kf in sg.Kfs.Select(k => k.T).Distinct()) { var d = new TextBlock { Text = "◆", Foreground = Br("#25f4ee"), FontSize = 9 }; Canvas.SetLeft(d, kf * Px - 4); Canvas.SetTop(d, TH - 20); kc.Children.Add(d); }
-            g.Children.Add(kc);
-            Canvas.SetLeft(g, sg.Start * Px); Canvas.SetTop(g, RULER + sg.Track * TH + 2);
-            bool moved = false, resize = false; double sx = 0, sy = 0, oS = 0, oD = 0; int oT = 0;
+            var inner = new Canvas { Width = w, Height = h, ClipToBounds = true, IsHitTestVisible = false }; g.Children.Add(inner);
+            double thumbH = sg.Kind is "video" or "image" ? 34 : 0;
+            if (thumbH > 0 && m != null)
+            {
+                if (sg.Kind == "video" && m.Strip != null)
+                {
+                    var sprite = Thumb(m.Strip); double cellW = Math.Max(24, m.TileW * thumbH / 80);
+                    for (double x = 0; x < w; x += cellW)
+                    {
+                        int idx = Math.Clamp((int)((sg.Src + (x + cellW / 2) / Px * sg.Speed) / m.StripStep), 0, m.StripN - 1);
+                        var r = new Rectangle { Width = cellW, Height = thumbH, Fill = new ImageBrush(sprite) { Viewbox = new Rect(idx / (double)m.StripN, 0, 1.0 / m.StripN, 1), Stretch = Stretch.Fill } };
+                        Canvas.SetLeft(r, x); inner.Children.Add(r);
+                    }
+                }
+                else if (m.Thumb != null)
+                {
+                    var im = Thumb(m.Thumb); var bw = ((BitmapSource)im).PixelWidth * thumbH / 90.0;
+                    inner.Children.Add(new Rectangle { Width = w, Height = thumbH, Fill = new ImageBrush(im) { TileMode = TileMode.Tile, Stretch = Stretch.Fill, Viewport = new Rect(0, 0, bw, thumbH), ViewportUnits = BrushMappingMode.Absolute } });
+                }
+            }
+            bool wave = (sg.Kind == "audio" || sg.HasAudio) && m?.Peaks != null; double wy = thumbH, wh = h - thumbH;
+            if (wave)
+            {
+                var geo = new StreamGeometry();
+                using (var ctx = geo.Open())
+                    for (double x = 0; x < w; x += 2)
+                    {
+                        int bin = (int)((sg.Src + x / Px * sg.Speed) * 20); if (bin >= m.Peaks.Length) break;
+                        double half = wh / 2 * Math.Min(1, Math.Sqrt(m.Peaks[bin] / 255.0) * sg.Volume);
+                        ctx.BeginFigure(new Point(x, wy + wh / 2 - half), false, false); ctx.LineTo(new Point(x, wy + wh / 2 + Math.Max(.5, half)), true, false);
+                    }
+                geo.Freeze(); inner.Children.Add(new System.Windows.Shapes.Path { Data = geo, Stroke = Br("#bfe6ff"), StrokeThickness = 1.4, Opacity = .85 });
+            }
+            inner.Children.Add(new TextBlock { Text = (sg.Kind == "audio" ? "♪ " : "") + sg.Name, Foreground = Brushes.White, FontSize = 10, Margin = new Thickness(6, 2, 6, 0), Background = Br("#88000000"), Padding = new Thickness(3, 0, 3, 0) });
+            foreach (var kf in sg.Kfs.Select(k => k.T).Distinct()) { var d = new TextBlock { Text = "◆", Foreground = Br("#25f4ee"), FontSize = 9 }; Canvas.SetLeft(d, kf * Px - 4); Canvas.SetTop(d, h - 14); inner.Children.Add(d); }
+            g.Children.Add(new Border { CornerRadius = new CornerRadius(5), BorderBrush = Br(sg == sel ? "#25f4ee" : "transparent"), BorderThickness = new Thickness(sg == sel ? 2 : 0), IsHitTestVisible = false });
+            Canvas.SetLeft(g, sg.Start * Px); Canvas.SetTop(g, TrackTop(sg.Track) + 2);
+
+            // volume line: only on the selected clip, drag up/down to change gain (0..2 = -inf..+6 dB)
+            if (wave && sg == sel)
+            {
+                double ly = wy + wh * (1 - Math.Clamp(sg.Volume, 0, 2) / 2);
+                var line = new Rectangle { Width = w, Height = 2, Fill = Br("#ffe27a"), IsHitTestVisible = false }; Canvas.SetTop(line, ly - 1); inner.Children.Add(line);
+                var lbl = new TextBlock { Text = Db(sg.Volume), FontSize = 10, Foreground = Br("#ffe27a"), Background = Br("#aa000000"), Padding = new Thickness(3, 0, 3, 0), IsHitTestVisible = false }; Canvas.SetLeft(lbl, 4); Canvas.SetTop(lbl, Math.Clamp(ly - 16, 0, h - 14)); inner.Children.Add(lbl);
+                var hit = new Rectangle { Width = w, Height = 14, Fill = Brushes.Transparent, Cursor = Cursors.SizeNS, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, ly - 7, 0, 0), ToolTip = "Arrastra para subir/bajar el volumen" };
+                bool drag = false;
+                hit.MouseLeftButtonDown += (_, e) => { drag = true; hit.CaptureMouse(); Push(); e.Handled = true; };
+                hit.MouseMove += (_, e) =>
+                {
+                    if (!drag) return;
+                    var v = Math.Round(Math.Clamp(2 * (1 - (e.GetPosition(g).Y - wy) / wh), 0, 2), 2); if (Math.Abs(v - 1) < 0.04) v = 1;
+                    sg.Set("volume", v, Rel); double ny = wy + wh * (1 - v / 2);
+                    Canvas.SetTop(line, ny - 1); lbl.Text = Db(v); Canvas.SetTop(lbl, Math.Clamp(ny - 16, 0, h - 14)); hit.Margin = new Thickness(0, ny - 7, 0, 0);
+                    RefreshDetails(); Sync(false);
+                };
+                hit.MouseLeftButtonUp += (_, _) => { if (!drag) return; drag = false; hit.ReleaseMouseCapture(); Dirty(); };
+                g.Children.Add(hit);
+            }
+
+            bool moved = false, resize = false; double sx = 0, sy = 0, oS = 0, oD = 0;
             g.MouseLeftButtonDown += (_, e) =>
             {
-                Select(sg); var p = e.GetPosition(TL); sx = p.X; sy = p.Y; oS = sg.Start; oD = sg.Dur; oT = sg.Track; moved = false; resize = e.GetPosition(g).X > g.Width - 9;
+                Select(sg); var p = e.GetPosition(TL); sx = p.X; sy = p.Y; oS = sg.Start; oD = sg.Dur; moved = false; resize = e.GetPosition(g).X > g.Width - 9;
                 g.CaptureMouse(); e.Handled = true;
             };
             g.MouseMove += (_, e) =>
@@ -318,9 +442,9 @@ namespace MiniCut
                     foreach (var edge in proj.Segs.Where(o => o != sg).SelectMany(o => new[] { o.Start, o.End }).Append(P))
                     { if (Math.Abs(ns - edge) * Px < 8) ns = edge; else if (Math.Abs(ns + sg.Dur - edge) * Px < 8) ns = edge - sg.Dur; }
                     sg.Start = Math.Max(0, ns);
-                    int row = Math.Clamp((int)((p.Y - RULER) / TH), 0, TrackNames.Length - 1);
-                    if (Compatible(sg.Kind, row)) sg.Track = row;
-                    Canvas.SetLeft(g, sg.Start * Px); Canvas.SetTop(g, RULER + sg.Track * TH + 2);
+                    int row = RowAt(p.Y);
+                    if (Compatible(sg.Kind, row) && Math.Abs(TrackH[row] - TrackH[sg.Track]) < 1) sg.Track = row;
+                    Canvas.SetLeft(g, sg.Start * Px); Canvas.SetTop(g, TrackTop(sg.Track) + 2);
                 }
             };
             g.MouseLeftButtonUp += (_, _) => { if (!g.IsMouseCaptured) return; g.ReleaseMouseCapture(); if (moved) { RefreshDetails(); Dirty(); } };
@@ -422,6 +546,7 @@ namespace MiniCut
         // ---------- playback ----------
         void Seek(double t)
         {
+            CloseMonitor(null, null);
             P = Math.Max(0, t); if (head != null) Canvas.SetLeft(head, P * Px); Clock.Text = $"{T(P)} / {T(Total)}";
             if (playing) { p0 = P; clock.Restart(); }
             if (sel != null) RefreshDetails();
@@ -433,6 +558,7 @@ namespace MiniCut
 
         void Play(object s = null, RoutedEventArgs e = null)
         {
+            CloseMonitor(null, null);
             if (playing) { StopPlay(); return; }
             if (proj.Segs.Count == 0) return;
             if (P >= Total - .05) P = 0;
@@ -472,7 +598,7 @@ namespace MiniCut
         {
             if (Keyboard.FocusedElement is TextBox) return;
             var ctrl = Keyboard.Modifiers == ModifierKeys.Control;
-            if (e.Key == Key.Space) Play(); else if (e.Key == Key.Delete) Delete(); else if (e.Key == Key.S && !ctrl) Split();
+            if (e.Key == Key.Space) { if (Monitor.Visibility == Visibility.Visible) ToggleMonitor(); else Play(); } else if (e.Key == Key.Delete) Delete(); else if (e.Key == Key.S && !ctrl) Split();
             else if (e.Key == Key.Z && ctrl) Undo(null, null); else if (e.Key == Key.Y && ctrl) Redo(null, null);
             else if (e.Key == Key.Left) Seek(P - 0.1); else if (e.Key == Key.Right) Seek(P + 0.1); else return;
             e.Handled = true;
@@ -514,6 +640,11 @@ namespace MiniCut
         }
     }
 }
+
+
+
+
+
 
 
 

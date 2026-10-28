@@ -96,6 +96,31 @@ namespace MiniCut
 
         public static readonly string Cache = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "minicut_cache");
         static string Key(string path) => Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(Encoding.UTF8.GetBytes(path)))[..12];
+        public static string Strip(string path) => System.IO.Path.Combine(Cache, "st_" + Key(path) + ".png");
+
+        // one wide PNG with n evenly spaced frames (tile i ~ time i*step); the timeline crops it per clip
+        public static (int n, double step) MakeStrip(string src, double dur)
+        {
+            int n = (int)Math.Clamp(Math.Ceiling(dur / 2), 1, 80); double step = dur / n; var png = Strip(src);
+            if (!File.Exists(png)) Exec("ffmpeg", $"-y -v error -nostdin -i \"{src}\" -an -vf fps=1/{F(step)},scale=-2:80,tile={n}x1 -frames:v 1 \"{png}\"");
+            return (n, step);
+        }
+
+        // 20 peaks per second (0-255) from the audio track, for the waveform
+        public static byte[] Peaks(string src)
+        {
+            var p = Process.Start(new ProcessStartInfo(Bin("ffmpeg"), $"-v error -nostdin -i \"{src}\" -vn -ac 1 -ar 8000 -f s16le -") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true });
+            var err = p.StandardError.ReadToEndAsync(); var list = new List<byte>(); var buf = new byte[800]; var s = p.StandardOutput.BaseStream;
+            while (true)
+            {
+                int got = 0; while (got < buf.Length) { int r = s.Read(buf, got, buf.Length - got); if (r <= 0) break; got += r; }
+                if (got < 2) break;
+                int mx = 0; for (int i = 0; i + 1 < got; i += 2) { int v = Math.Abs((short)(buf[i] | (buf[i + 1] << 8))); if (v > mx) mx = v; }
+                list.Add((byte)Math.Min(255, mx / 128)); if (got < buf.Length) break;
+            }
+            p.WaitForExit(); return list.ToArray();
+        }
+
         public static string Thumb(string path) => System.IO.Path.Combine(Cache, "th_" + Key(path) + ".png");
 
         // PATH first, then winget's install folder (a fresh install is not on an already-open terminal's PATH); resolved once
@@ -220,6 +245,7 @@ namespace MiniCut
         }
     }
 }
+
 
 
 
