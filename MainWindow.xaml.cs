@@ -365,7 +365,7 @@ namespace MiniCut
         {
             if (!blocks.TryGetValue(s, out var old)) { Redraw(); return; }
             int i = TL.Children.IndexOf(old); if (i < 0) { Redraw(); return; }
-            var nb = Block(s); blocks[s] = nb; TL.Children[i] = nb;
+            var nb = Block(s); blocks[s] = nb; TL.Children.RemoveAt(i); TL.Children.Insert(i, nb); // indexer assignment throws "index already in use" on a UIElementCollection
         }
 
         static string Db(double vol) => vol <= 0.001 ? "-∞ dB" : $"{20 * Math.Log10(vol):+0.0;-0.0;0.0} dB";
@@ -667,6 +667,9 @@ namespace MiniCut
         }
     }
 }
+
+
+
 
 
 
