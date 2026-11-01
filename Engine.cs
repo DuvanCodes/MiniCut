@@ -182,6 +182,74 @@ namespace MiniCut
         public string Name => Kind == "text" ? "T " + Text : System.IO.Path.GetFileName(Path);
         public double End => Start + Dur;
 
+        // ---- continuous speed curve. Curve points: T = seconds into the source (from Src), V = speed; linear in between, last speed kept afterwards.
+        // Output time is the integral of 1/speed, which has a closed form per segment (ln for a linear ramp), so preview, export video and audio agree exactly.
+        public List<Kf> Curve { get; set; } = new();
+        public bool Curved => Curve.Count > 0;
+        static string F8(double d) => d.ToString("0.########", CultureInfo.InvariantCulture);
+        public string CurveSig() => string.Join(";", Curve.Select(k => k.T.ToString("0.####", CultureInfo.InvariantCulture) + ":" + k.V.ToString("0.###", CultureInfo.InvariantCulture)));
+        (double[] x, double[] v) CPts()
+        {
+            var k = Curve.OrderBy(p => p.T).ToList(); var xs = k.Select(p => p.T).ToList(); var vs = k.Select(p => Math.Max(.05, p.V)).ToList();
+            if (xs[0] > 0) { xs.Insert(0, 0); vs.Insert(0, vs[0]); }
+            return (xs.ToArray(), vs.ToArray());
+        }
+        static double Seg1(double v0, double k, double d) => Math.Abs(k) < 1e-9 ? d / v0 : Math.Log((v0 + k * d) / v0) / k; // ∫ dx/v over d source seconds, v = v0 + k·x
+        public double OutOf(double x)
+        {
+            if (!Curved) return x / Speed;
+            var (xs, vs) = CPts(); double o = 0;
+            for (int i = 0; i < xs.Length; i++)
+            {
+                bool last = i == xs.Length - 1; double x0 = xs[i], x1 = last ? double.PositiveInfinity : xs[i + 1], k = last ? 0 : (vs[i + 1] - vs[i]) / (x1 - x0), xe = Math.Min(x, x1);
+                if (xe <= x0) break; o += Seg1(vs[i], k, xe - x0);
+            }
+            return o;
+        }
+        public double SrcAt(double t)
+        {
+            if (!Curved) return t * Speed;
+            var (xs, vs) = CPts(); double o = 0; t = Math.Max(0, t);
+            for (int i = 0; i < xs.Length; i++)
+            {
+                bool last = i == xs.Length - 1; double x0 = xs[i], k = last ? 0 : (vs[i + 1] - vs[i]) / (xs[i + 1] - x0), segOut = last ? double.PositiveInfinity : Seg1(vs[i], k, xs[i + 1] - x0);
+                if (t <= o + segOut) { double dt = t - o; return Math.Abs(k) < 1e-9 ? x0 + vs[i] * dt : x0 + vs[i] * (Math.Exp(k * dt) - 1) / k; }
+                o += segOut;
+            }
+            return xs[^1];
+        }
+        public double SpeedAt(double t)
+        {
+            if (!Curved) return Speed; var (xs, vs) = CPts(); double x = SrcAt(t);
+            for (int i = 0; i < xs.Length - 1; i++) if (x <= xs[i + 1]) return vs[i] + (x - xs[i]) / (xs[i + 1] - xs[i]) * (vs[i + 1] - vs[i]);
+            return vs[^1];
+        }
+        public double Used => Curved ? SrcAt(Dur) : Dur * Speed; // seconds of source this clip consumes
+        // the same map as an ffmpeg expression: source seconds `x` -> output seconds
+        public string OutExpr(string x)
+        {
+            var (xs, vs) = CPts(); int n = xs.Length; var o = new double[n];
+            for (int i = 1; i < n; i++) o[i] = o[i - 1] + Seg1(vs[i - 1], (vs[i] - vs[i - 1]) / (xs[i] - xs[i - 1]), xs[i] - xs[i - 1]);
+            string e = $"({F8(o[n - 1])}+({x}-{F8(xs[n - 1])})/{F8(vs[n - 1])})";
+            for (int i = n - 2; i >= 0; i--)
+            {
+                double k = (vs[i + 1] - vs[i]) / (xs[i + 1] - xs[i]);
+                string f = Math.Abs(k) < 1e-9 ? $"({x}-{F8(xs[i])})/{F8(vs[i])}" : $"log(({F8(vs[i])}+{F8(k)}*({x}-{F8(xs[i])}))/{F8(vs[i])})/{F8(k)}";
+                e = $"if(lt({x},{F8(xs[i + 1])}),{F8(o[i])}+{f},{e})";
+            }
+            return e;
+        }
+        // the part of the curve between source seconds x0..x1, re-based to start at 0 (used when a curved clip is split)
+        public List<Kf> CurveSlice(double x0, double x1)
+        {
+            var (xs, vs) = CPts();
+            double V(double x) { for (int i = 0; i < xs.Length - 1; i++) if (x <= xs[i + 1]) return vs[i] + (x - xs[i]) / (xs[i + 1] - xs[i]) * (vs[i + 1] - vs[i]); return vs[^1]; }
+            var r = new List<Kf> { new Kf { Prop = "speed", T = 0, V = V(x0) } };
+            for (int i = 0; i < xs.Length; i++) if (xs[i] > x0 + 1e-6 && xs[i] < x1 - 1e-6) r.Add(new Kf { Prop = "speed", T = xs[i] - x0, V = vs[i] });
+            if (x1 > x0 + 1e-6) r.Add(new Kf { Prop = "speed", T = x1 - x0, V = V(x1) });
+            return r;
+        }
+
         public double Static(string p) => p switch { "x" => X, "y" => Y, "scale" => Scale, "rotation" => Rotation, _ => Volume };
         void SetStatic(string p, double v) { switch (p) { case "x": X = v; break; case "y": Y = v; break; case "scale": Scale = v; break; case "rotation": Rotation = v; break; default: Volume = v; break; } }
         public List<Kf> Of(string p) => Kfs.Where(k => k.Prop == p).OrderBy(k => k.T).ToList();
@@ -325,10 +393,31 @@ namespace MiniCut
         // processed copy of a clip's decoded PCM (pitch / voice / speed baked in) that the live mixer plays instead of the original
         public static string ProcPath(string raw, string chain, int rs, int len) => System.IO.Path.Combine(Cache, "pr_" + Key(raw + "|" + chain + "|" + rs + "|" + len) + ".raw");
         // only the seconds [rs, rs+len) of the source are processed, so a clip cut into pieces does not re-process the whole file for each piece
+        // audio of a curved clip: N slices of the source, each time-stretched by exactly (slice length / its output length), then joined
+        public static string CurveGraph(Seg s, double used, string inL, string outL, string tag)
+        {
+            int n = Math.Clamp((int)Math.Ceiling(used / .25), 6, 80); var sb = new StringBuilder();
+            sb.Append(inL + "asplit=" + n + string.Concat(Enumerable.Range(0, n).Select(i => $"[{tag}p{i}]")));
+            for (int i = 0; i < n; i++)
+            {
+                double a = used * i / n, b = used * (i + 1) / n, d = s.OutOf(b) - s.OutOf(a);
+                sb.Append($";[{tag}p{i}]atrim={F(a)}:{F(b)},asetpts=PTS-STARTPTS,{Atempo((b - a) / Math.Max(1e-6, d))}[{tag}s{i}]");
+            }
+            sb.Append(";" + string.Concat(Enumerable.Range(0, n).Select(i => $"[{tag}s{i}]")) + $"concat=n={n}:v=0:a=1{outL}"); return sb.ToString();
+        }
         public static bool MakeProc(string raw, string chain, int rs, int len)
         {
             var o = ProcPath(raw, chain, rs, len); if (File.Exists(o)) return true; var tmp = o + ".part";
-            Exec("ffmpeg", $"-y -v error -nostdin -f s16le -ar 44100 -ac 2 -ss {rs} -t {len} -i \"{raw}\" " + (chain != "" ? $"-af \"{chain}\" " : "") + $"-f s16le -ar 44100 -ac 2 \"{tmp}\"");
+            if (chain.StartsWith("CURVE|"))
+            {   // rs / len are milliseconds here; the copy starts exactly at the clip's first source sample
+                var parts = chain.Split('|', 3); var inv = CultureInfo.InvariantCulture; double used = len / 1000.0 - .1;
+                var sg = new Seg { Curve = parts[1].Split(';', StringSplitOptions.RemoveEmptyEntries).Select(p => { var q = p.Split(':'); return new Kf { Prop = "speed", T = double.Parse(q[0], inv), V = double.Parse(q[1], inv) }; }).ToList() };
+                var gf = System.IO.Path.Combine(Cache, "cg_" + Guid.NewGuid().ToString("N")[..8] + ".txt");
+                File.WriteAllText(gf, CurveGraph(sg, used, "[0:a]", parts[2] == "" ? "[o]" : "[cx]", "p") + (parts[2] == "" ? "" : $";[cx]{parts[2]}[o]"));
+                Exec("ffmpeg", $"-y -v error -nostdin -f s16le -ar 44100 -ac 2 -ss {F(rs / 1000.0)} -t {F(used + .05)} -i \"{raw}\" -/filter_complex \"{gf}\" -map [o] -f s16le -ar 44100 -ac 2 \"{tmp}\"");
+                try { File.Delete(gf); } catch { }
+            }
+            else Exec("ffmpeg", $"-y -v error -nostdin -f s16le -ar 44100 -ac 2 -ss {rs} -t {len} -i \"{raw}\" " + (chain != "" ? $"-af \"{chain}\" " : "") + $"-f s16le -ar 44100 -ac 2 \"{tmp}\"");
             if (File.Exists(tmp)) File.Move(tmp, o, true); return File.Exists(o);
         }
 
@@ -352,15 +441,15 @@ namespace MiniCut
             foreach (var s in p.Segs.Where(s => s.Kind != "text" && On(s)))
             {
                 idx[s] = n++;
-                if (at != null) inp.Append(s.Kind == "image" ? $"-loop 1 -framerate 30 -t 0.5 -i \"{s.Path}\" " : $"-ss {F(s.Src + (Math.Min(at.Value, s.End - .05) - s.Start) * s.Speed)} -t 0.5 -i \"{s.Path}\" ");
-                else inp.Append(s.Kind == "image" ? $"-loop 1 -framerate 30 -t {F(s.Dur)} -i \"{s.Path}\" " : $"-ss {F(s.Src)} -t {F(s.Dur * s.Speed)} -i \"{s.Path}\" ");
+                if (at != null) inp.Append(s.Kind == "image" ? $"-loop 1 -framerate 30 -t 0.5 -i \"{s.Path}\" " : $"-ss {F(s.Src + s.SrcAt(Math.Min(at.Value, s.End - .05) - s.Start))} -t 0.5 -i \"{s.Path}\" ");
+                else inp.Append(s.Kind == "image" ? $"-loop 1 -framerate 30 -t {F(s.Dur)} -i \"{s.Path}\" " : $"-ss {F(s.Src)} -t {F(s.Used)} -i \"{s.Path}\" ");
             }
             string prev = "b0"; int k = 0;
             g.Append(at == null ? $"color=c=black:s={W}x{H}:r=30:d={F(total)}[b0];" : $"color=c=black:s={W}x{H}:r=30:d=1,setpts=PTS+{F(at.Value)}/TB[b0];");
             foreach (var s in p.Segs.Where(s => s.Kind is "video" or "image" && On(s) && !p.Hidden.Contains(s.Track)).OrderByDescending(s => s.Track).ThenBy(s => s.Start))
             {
                 int i = idx[s];
-                var c = new List<string> { $"setpts=(PTS-STARTPTS)/{F(s.Speed)}", "fps=30", $"setpts=PTS+{F(at ?? s.Start)}/TB" };
+                var c = new List<string> { s.Curved ? $"setpts=PTS-STARTPTS,setpts='({s.OutExpr("(PTS*TB)")})/TB'" : $"setpts=(PTS-STARTPTS)/{F(s.Speed)}", "fps=30", $"setpts=PTS+{F(at ?? s.Start)}/TB" };
                 if (s.Flip) c.Add("hflip");
                 c.Add($"scale={W}:{H}:force_original_aspect_ratio=decrease");
                 if (s.Brightness != 0 || s.Contrast != 1 || s.Saturation != 1) c.Add($"eq=brightness={F(s.Brightness)}:contrast={F(s.Contrast)}:saturation={F(s.Saturation)}");
@@ -406,7 +495,7 @@ namespace MiniCut
                 var aidx = new Dictionary<Seg, int>();
                 foreach (var s in p.Segs.Where(s => ((s.Kind == "video" && s.HasAudio) || s.Kind == "audio") && !p.Muted.Contains(s.Track)))
                 {
-                    if (MakeRaw(s.Path)) { aidx[s] = n++; inp.Append($"-f s16le -ar 44100 -ac 2 -ss {F(s.Src)} -t {F(s.Dur * s.Speed)} -i \"{Raw(s.Path)}\" "); }
+                    if (MakeRaw(s.Path)) { aidx[s] = n++; inp.Append($"-f s16le -ar 44100 -ac 2 -ss {F(s.Src)} -t {F(s.Used)} -i \"{Raw(s.Path)}\" "); }
                     else aidx[s] = idx[s];
                 }
                 var labels = new List<string>();
@@ -419,7 +508,9 @@ namespace MiniCut
                     if (s.FadeIn > 0) a.Add($"afade=t=in:st=0:d={F(s.FadeIn)}");
                     if (s.FadeOut > 0) a.Add($"afade=t=out:st={F(Math.Max(0, s.Dur - s.FadeOut))}:d={F(s.FadeOut)}");
                     a.Add($"adelay=delays={(int)(s.Start * 1000)}:all=1");
-                    g.Append($";[{aidx[s]}:a]{string.Join(",", a)}[a{aidx[s]}]"); labels.Add($"[a{aidx[s]}]");
+                    string asrc = $"[{aidx[s]}:a]";
+                    if (s.Curved) { g.Append(";" + CurveGraph(s, s.Used, asrc, $"[cx{aidx[s]}]", "c" + aidx[s])); asrc = $"[cx{aidx[s]}]"; }
+                    g.Append($";{asrc}{string.Join(",", a)}[a{aidx[s]}]"); labels.Add($"[a{aidx[s]}]");
                 }
                 g.Append(labels.Count == 0 ? $";anullsrc=r=44100:cl=stereo:d={F(total)}[aout]" : $";{string.Concat(labels)}amix=inputs={labels.Count}:normalize=0:duration=longest[aout]");
             }

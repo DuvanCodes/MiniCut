@@ -50,4 +50,4 @@ MiniCut no descarga nada de CapCut. Cada persona añade su propio contenido:
 
 ## Audio y velocidad (v0.10)
 - **Tono** (±12 semitonos), **cambio de voz** (11 efectos sin IA) y **cambiar tono con la velocidad**: cadena de filtros ffmpeg (`Ff.AudioChain`). La vista previa reproduce una copia procesada del audio decodificado; la exportación aplica la misma cadena.
-- **Curvas de velocidad** y **efectos de velocidad**: se aplican cortando el clip en 12 trozos de velocidad constante (preview y exportación coinciden). Dev hook: `MINICUT_CURVE=<nombre>`.
+- **Curvas de velocidad** y **efectos de velocidad**: rampa continua sobre un solo clip (v0.12). El tiempo de salida es la integral de 1/velocidad (`ln` en cada tramo lineal), así que vídeo (`setpts` con `log`), audio (rebanadas con `atempo` exacto) y vista previa coinciden. Dev hooks: `MINICUT_CURVE=<nombre>`, `MINICUT_SPLITAT=<s>`.

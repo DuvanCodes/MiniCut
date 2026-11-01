@@ -68,7 +68,7 @@ namespace MiniCut
             Log("Grade shader ok=" + Grade.Ok + " " + Grade.Error);
             // dev hook: MINICUT_AUTOPLAY=<project.minicut> loads it and starts playback
             Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); HideHome(); ShowTab(0); Redraw(); if (Environment.GetEnvironmentVariable("MINICUT_SELECT") != null) Select(proj.Segs[0]);
-                var cv = Environment.GetEnvironmentVariable("MINICUT_CURVE"); if (cv != null) { Select(proj.Segs[0]); ApplyCurve(Opts.Curves.Concat(Opts.SpeedFx).First(c => c.Name == cv).Pts); File.WriteAllText(f + ".curve.json", JsonSerializer.Serialize(proj)); Log("curve pieces=" + proj.Segs.Count + " total=" + Total.ToString("0.00")); return; }
+                var cv = Environment.GetEnvironmentVariable("MINICUT_CURVE"); if (cv != null) { Select(proj.Segs[0]); ApplyCurve(Opts.Curves.Concat(Opts.SpeedFx).First(c => c.Name == cv).Pts); var sp = Environment.GetEnvironmentVariable("MINICUT_SPLITAT"); if (sp != null) { Seek(double.Parse(sp, CultureInfo.InvariantCulture)); Split(); } File.WriteAllText(f + ".curve.json", JsonSerializer.Serialize(proj)); Log("curve pieces=" + proj.Segs.Count + " total=" + Total.ToString("0.00")); return; }
                 Play();
             };
         }
@@ -533,7 +533,7 @@ namespace MiniCut
             speedInfo = new TextBlock { Foreground = Br("#d5dde0"), FontSize = 12, Margin = new Thickness(0, 10, 0, 0) }; ((Panel)secs["speed"]).Children.Add(speedInfo);
             pitchChk = new CheckBox { Content = "Cambiar el tono con la velocidad", Foreground = Br("#e9e9ee"), Margin = new Thickness(0, 12, 0, 0) };
             pitchChk.Click += (_, _) => { if (sel == null) return; Push(); sel.PitchWithSpeed = pitchChk.IsChecked == true; Dirty(); }; ((Panel)secs["speed"]).Children.Add(pitchChk);
-            var rs = new Button { Content = "Restablecer", HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) }; rs.Click += (_, _) => { if (sel != null) rows["speed"].S.Value = 1; }; ((Panel)secs["speed"]).Children.Add(rs);
+            var rs = new Button { Content = "Restablecer", HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) }; rs.Click += (_, _) => { if (sel == null) return; if (sel.Curved) { Push(); var u = sel.Used; sel.Curve.Clear(); sel.Speed = 1; sel.Dur = u; RefreshDetails(); Dirty(); } else rows["speed"].S.Value = 1; }; ((Panel)secs["speed"]).Children.Add(rs);
             Section("vol", "Básico", R(sg => { sg.Volume = 1; sg.Kfs.RemoveAll(k => k.Prop == "volume"); })); Row("vol", "volume", "Volumen", 0, 2, true); Row("vol", "pitch", "Tono", -12, 12, false, "0");
             Section("fade", "Fundidos", R(sg => { sg.FadeIn = 0; sg.FadeOut = 0; })); Row("fade", "fadein", "Fundido de entrada", 0, 5, false, "0.0"); Row("fade", "fadeout", "Fundido de salida", 0, 5, false, "0.0");
         }
@@ -580,7 +580,7 @@ namespace MiniCut
             if (has)
             {
                 foreach (var (key, r) in rows) { var v = ReadStatic(key); r.S.Value = v; ShowRow(key, v); }
-                speedInfo.Text = $"Duración    {sel.Dur * sel.Speed:0.0}s   →   {sel.Dur:0.0}s"; pitchChk.IsChecked = sel.PitchWithSpeed;
+                speedInfo.Text = SpeedInfo(); pitchChk.IsChecked = sel.PitchWithSpeed;
                 foreach (Button b in voicePanel.Children) { bool on = (string)b.Tag == sel.Voice; b.Background = Br(on ? "#1c3a40" : "#1c282d"); b.Foreground = Br(on ? "#25f4ee" : "#cfd8db"); }
                 tbText.Text = sel.Text; ((CheckBox)secs["xform2"].Tag).IsChecked = sel.Flip; ((CheckBox)secs["mask"].Tag).IsChecked = sel.MaskInvert;
                 foreach (Button b in blendPanel.Children) { bool on = (string)b.Tag == sel.Blend; b.Background = Br(on ? "#1c3a40" : "#1c282d"); b.Foreground = Br(on ? "#25f4ee" : "#cfd8db"); }
@@ -606,10 +606,10 @@ namespace MiniCut
                 case "fadeout": sel.FadeOut = v; break;
                 case "pitch": sel.Pitch = Math.Round(v); break;
                 case "maskw": sel.MaskW = v; break; case "maskh": sel.MaskH = v; break; case "maskrot": sel.MaskRot = v; break; case "maskfeather": sel.MaskFeather = v; break; case "maskround": sel.MaskRound = v; break;
-                case "speed": { var used = sel.Dur * sel.Speed; sel.Speed = v; sel.Dur = used / v; break; }
+                case "speed": { var used = sel.Used; sel.Curve.Clear(); sel.Speed = v; sel.Dur = used / v; break; }
                 default: sel.Set(key, v, Rel); break;
             }
-            ShowRow(key, v); if (key == "speed") speedInfo.Text = $"Duración    {sel.Dur * sel.Speed:0.0}s   →   {sel.Dur:0.0}s";
+            ShowRow(key, v); if (key == "speed") speedInfo.Text = SpeedInfo();
             // only what really changes on screen: speed moves the clip end, volume reshapes the waveform; everything else is just a re-sync
             if (key == "speed") Dirty();
             else { RebuildAudio(); Sync(!playing); if (key == "volume") RedrawBlock(sel); }
@@ -692,7 +692,7 @@ namespace MiniCut
                     var sprite = Thumb(m.Strip); double cellW = Math.Max(24, m.TileW * thumbH / 80);
                     for (double x = 0; x < w; x += cellW)
                     {
-                        int idx = Math.Clamp((int)((sg.Src + (x + cellW / 2) / Px * sg.Speed) / m.StripStep), 0, m.StripN - 1);
+                        int idx = Math.Clamp((int)((sg.Src + sg.SrcAt((x + cellW / 2) / Px)) / m.StripStep), 0, m.StripN - 1);
                         if (!cellBrushes.TryGetValue((m.Strip, idx), out var br)) { br = new ImageBrush(sprite) { Viewbox = new Rect(idx / (double)m.StripN, 0, 1.0 / m.StripN, 1), Stretch = Stretch.Fill }; br.Freeze(); cellBrushes[(m.Strip, idx)] = br; }
                         var r = new Rectangle { Width = cellW, Height = thumbH, Fill = br };
                         Canvas.SetLeft(r, x); Canvas.SetTop(r, headH); inner.Children.Add(r);
@@ -711,7 +711,7 @@ namespace MiniCut
                 using (var ctx = geo.Open())
                     for (double x = 0; x < w; x += 2)
                     {
-                        int bin = (int)((sg.Src + x / Px * sg.Speed) * 20); if (bin >= m.Peaks.Length) break;
+                        int bin = (int)((sg.Src + sg.SrcAt(x / Px)) * 20); if (bin >= m.Peaks.Length) break;
                         double half = wh / 2 * Math.Min(1, Math.Sqrt(m.Peaks[bin] / 255.0) * sg.Volume);
                         ctx.BeginFigure(new Point(x, wy + wh / 2 - half), false, false); ctx.LineTo(new Point(x, wy + wh / 2 + Math.Max(.5, half)), true, false);
                     }
@@ -763,7 +763,7 @@ namespace MiniCut
                 if (!moved) { Push(); moved = true; }
                 if (resize)
                 {
-                    var max = sg.Kind is "video" or "audio" ? (sg.SrcLen - sg.Src) / sg.Speed : 600.0;
+                    var max = sg.Kind is "video" or "audio" ? sg.OutOf(sg.SrcLen - sg.Src) : 600.0;
                     sg.Dur = Math.Clamp(oD + (p.X - sx) / Px, .2, max); g.Width = Math.Max(12, sg.Dur * Px);
                 }
                 else
@@ -867,14 +867,14 @@ namespace MiniCut
                     if (proj.Hidden.Contains(s.Track)) l.El.Opacity = 0;
                 }
                 if (l.Me == null || !l.Ready) continue;
-                var me = l.Me; double target = s.Src + rel * s.Speed;
-                me.SpeedRatio = s.Speed; bool viaMixer = UsesEngine(s); me.IsMuted = viaMixer || !active || proj.Muted.Contains(s.Track); // the mixer plays this clip; MediaElement only supplies the picture
+                var me = l.Me; double target = s.Src + s.SrcAt(rel);
+                { var sr = s.Curved ? Math.Clamp(s.SpeedAt(rel), .25, 4) : s.Speed; if (Math.Abs(me.SpeedRatio - sr) > .02) me.SpeedRatio = sr; } bool viaMixer = UsesEngine(s); me.IsMuted = viaMixer || !active || proj.Muted.Contains(s.Track); // the mixer plays this clip; MediaElement only supplies the picture
                 me.Volume = active && !viaMixer ? Math.Min(1, s.Get("volume", rel) * FadeF(s, rel)) : 0;
                 if (!active)
                 {
                     if (l.Playing) { me.Pause(); l.Playing = false; }
                     l.WasActive = false;
-                    if (held) { if (force) me.Position = TimeSpan.FromSeconds(s.Src + Math.Max(0, s.Dur - .04) * s.Speed); } // stays on its last frame under the transition
+                    if (held) { if (force) me.Position = TimeSpan.FromSeconds(s.Src + s.SrcAt(Math.Max(0, s.Dur - .04))); } // stays on its last frame under the transition
                     else if (force || !l.Primed) { me.Position = TimeSpan.FromSeconds(s.Src); l.Primed = true; }
                     continue;
                 }
@@ -908,14 +908,17 @@ namespace MiniCut
 
         // clips whose audio is decoded and at normal speed go through the mixer (gain up to +6 dB); the rest fall back to MediaElement.Volume
         readonly HashSet<string> procReady = new(); readonly HashSet<(string raw, string chain, int rs, int len)> procQueue = new(); DispatcherTimer procTimer;
-        static bool NeedsProc(Seg s) => s.Speed != 1 || s.Pitch != 0 || s.Voice != "Original";
-        // PCM the live mixer should play for this clip: the original, or a processed copy (pitch / voice / speed) made in the background; null while it is still being made
+        static bool NeedsProc(Seg s) => s.Curved || s.Speed != 1 || s.Pitch != 0 || s.Voice != "Original";
+        // PCM the live mixer should play for this clip: the original, or a processed copy (pitch / voice / speed / curve) made in the background; null while it is still being made
         string MixRaw(Seg s, out double src)
         {
             src = s.Src; var m = media.FirstOrDefault(x => x.Path == s.Path); if (m?.Raw == null) return null;
             if (!NeedsProc(s)) return m.Raw;
-            var chain = Ff.AudioChain(s); int rs = (int)Math.Max(0, Math.Floor(s.Src)), len = (int)Math.Ceiling(s.Dur * s.Speed) + 2; var pr = Ff.ProcPath(m.Raw, chain, rs, len);
-            if (procReady.Contains(pr) || (File.Exists(pr) && procReady.Add(pr))) { src = (s.Src - rs) / s.Speed; return pr; } // the copy starts at second rs of the source
+            string chain; int rs, len;
+            if (s.Curved) { chain = "CURVE|" + s.CurveSig() + "|" + Ff.AudioChain(s); rs = (int)Math.Round(s.Src * 1000); len = (int)Math.Round(s.Used * 1000) + 100; } // ms; the copy starts at the clip's first sample
+            else { chain = Ff.AudioChain(s); rs = (int)Math.Max(0, Math.Floor(s.Src)); len = (int)Math.Ceiling(s.Dur * s.Speed) + 2; }
+            var pr = Ff.ProcPath(m.Raw, chain, rs, len);
+            if (procReady.Contains(pr) || (File.Exists(pr) && procReady.Add(pr))) { src = s.Curved ? 0 : (s.Src - rs) / s.Speed; return pr; }
             if (procQueue.Add((m.Raw, chain, rs, len))) { if (procTimer == null) { procTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) }; procTimer.Tick += (_, _) => RunProc(); } procTimer.Stop(); procTimer.Start(); }
             return null;
         }
@@ -965,7 +968,9 @@ namespace MiniCut
                 b.Kfs.RemoveAll(k => k.Prop == prop && k.T < cut); foreach (var k in b.Kfs.Where(k => k.Prop == prop)) k.T -= cut;
                 if (!b.Kfs.Any(k => k.Prop == prop && k.T <= 0)) b.Kfs.Add(new Kf { Prop = prop, T = 0, V = v });
             }
-            b.Start = P; b.Src = sg.Src + cut * sg.Speed; b.Dur = sg.Dur - cut; sg.Dur = cut; sg.FadeOut = 0; b.FadeIn = 0;
+            double xc = sg.SrcAt(cut);
+            if (sg.Curved) { b.Curve = sg.CurveSlice(xc, Math.Max(sg.Curve.Max(k => k.T), xc + .01)); sg.Curve = sg.CurveSlice(0, xc); } // each half keeps its part of the speed curve
+            b.Start = P; b.Src = sg.Src + xc; b.Dur = sg.Dur - cut; sg.Dur = cut; sg.FadeOut = 0; b.FadeIn = 0;
             proj.Segs.Insert(proj.Segs.IndexOf(sg) + 1, b); Select(sg); Dirty();
         }
 
@@ -983,7 +988,7 @@ namespace MiniCut
         {
             var sg = sel != null && sel.Kind == "video" && P > sel.Start + .1 && P < sel.End - .1 ? sel : proj.Segs.FirstOrDefault(x => x.Kind == "video" && P > x.Start + .1 && P < x.End - .1);
             if (sg == null) { Busy.Text = "Coloca el cursor dentro de un clip de vídeo"; return; }
-            var at = (sg.Src + (P - sg.Start) * sg.Speed).ToString("0.###", CultureInfo.InvariantCulture); var png = Path.Combine(Tmp, $"fz_{DateTime.Now.Ticks}.png");
+            var at = (sg.Src + sg.SrcAt(P - sg.Start)).ToString("0.###", CultureInfo.InvariantCulture); var png = Path.Combine(Tmp, $"fz_{DateTime.Now.Ticks}.png");
             Busy.Text = "Congelando fotograma…"; var src = sg.Path;
             await Task.Run(() => Ff.Exec("ffmpeg", $"-y -v error -nostdin -ss {at} -i \"{src}\" -frames:v 1 \"{png}\""));
             if (!File.Exists(png)) { Busy.Text = "No se pudo congelar el fotograma"; return; }

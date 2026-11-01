@@ -75,18 +75,17 @@ namespace MiniCut
             ((Panel)secs["speedfx"]).Children.Add(new TextBlock { Style = (Style)FindResource("Lbl"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Text = "Efectos listos: se aplican al clip seleccionado de una vez." });
         }
 
+        string SpeedInfo() => sel.Curved ? $"Curva de velocidad    {sel.Used:0.0}s   →   {sel.Dur:0.0}s" : $"Duración    {sel.Dur * sel.Speed:0.0}s   →   {sel.Dur:0.0}s";
+
+        // puts a continuous speed curve on the selected clip (no cutting): the clip keeps its length in source seconds, its timeline length follows the curve
         void ApplyCurve((double u, double v)[] pts)
         {
             var s0 = sel; if (s0 == null || s0.Kind is not ("video" or "audio")) { Busy.Text = "Selecciona un clip de vídeo o audio"; return; }
             if (proj.Locked.Contains(s0.Track)) { Busy.Text = "La pista está bloqueada"; return; }
-            Push(); double used0 = s0.Dur * s0.Speed; int n = Math.Clamp((int)Math.Ceiling(used0 / 0.5), 8, 40); double used = s0.Dur * s0.Speed, oldEnd = s0.End, t = s0.Start, ss = used / n; var json = JsonSerializer.Serialize(s0); var pieces = new List<Seg>();
-            for (int i = 0; i < n; i++)
-            {
-                var p = JsonSerializer.Deserialize<Seg>(json); p.Kfs.Clear(); p.Speed = Math.Round(Math.Clamp(Opts.CurveAt(pts, (i + .5) / n), .25, 4), 2);
-                p.Src = s0.Src + i * ss; p.Dur = ss / p.Speed; p.Start = t; t += p.Dur; if (i > 0) { p.FadeIn = 0; p.Trans = "Ninguna"; } if (i < n - 1) p.FadeOut = 0; pieces.Add(p);
-            }
-            foreach (var x in proj.Segs.Where(x => x != s0 && x.Track == s0.Track && x.Start >= oldEnd - 1e-6)) x.Start += t - oldEnd; // ripple the clips after it
-            int idx = proj.Segs.IndexOf(s0); proj.Segs.RemoveAt(idx); proj.Segs.InsertRange(idx, pieces); Select(pieces[0]); Dirty();
+            Push(); double used = s0.Used, oldEnd = s0.End;
+            s0.Curve = pts.Select(p => new Kf { Prop = "speed", T = p.u * used, V = Math.Round(Math.Clamp(p.v, .25, 4), 2) }).ToList(); s0.Speed = 1; s0.Dur = s0.OutOf(used);
+            foreach (var x in proj.Segs.Where(x => x != s0 && x.Track == s0.Track && x.Start >= oldEnd - 1e-6)) x.Start += s0.End - oldEnd; // ripple the clips after it
+            RefreshDetails(); Dirty();
         }
     }
 }
