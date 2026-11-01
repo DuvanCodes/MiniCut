@@ -11,10 +11,10 @@ namespace MiniCut
     public class AClip
     {
         public object Key; public string Raw; public double Start, End, Src, FadeIn, FadeOut, Volume; public double[] KT = Array.Empty<double>(), KV = Array.Empty<double>();
-        public static AClip From(Seg s, string raw)
+        public static AClip From(Seg s, string raw, double src)
         {
             var k = s.Of("volume");
-            return new AClip { Key = s, Raw = raw, Start = s.Start, End = s.End, Src = s.Src, FadeIn = s.FadeIn, FadeOut = s.FadeOut, Volume = s.Volume, KT = k.ConvertAll(x => x.T).ToArray(), KV = k.ConvertAll(x => x.V).ToArray() };
+            return new AClip { Key = s, Raw = raw, Start = s.Start, End = s.End, Src = src, FadeIn = s.FadeIn, FadeOut = s.FadeOut, Volume = s.Volume, KT = k.ConvertAll(x => x.T).ToArray(), KV = k.ConvertAll(x => x.V).ToArray() };
         }
         // linear gain at time rel (seconds into the clip): keyframed/static volume x fades; same math the ffmpeg export uses
         public double Gain(double rel)

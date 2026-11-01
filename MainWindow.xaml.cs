@@ -66,7 +66,9 @@ namespace MiniCut
             BuildDetails(); CanvasStyle(); ShowTab(0); RefreshDetails(); Redraw(); Sync(true); InitHome();
             Log("Grade shader ok=" + Grade.Ok + " " + Grade.Error);
             // dev hook: MINICUT_AUTOPLAY=<project.minicut> loads it and starts playback
-            Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); HideHome(); ShowTab(0); Redraw(); if (Environment.GetEnvironmentVariable("MINICUT_SELECT") != null) Select(proj.Segs[0]); Play();
+            Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); HideHome(); ShowTab(0); Redraw(); if (Environment.GetEnvironmentVariable("MINICUT_SELECT") != null) Select(proj.Segs[0]);
+                var cv = Environment.GetEnvironmentVariable("MINICUT_CURVE"); if (cv != null) { Select(proj.Segs[0]); ApplyCurve(Opts.Curves.Concat(Opts.SpeedFx).First(c => c.Name == cv).Pts); File.WriteAllText(f + ".curve.json", JsonSerializer.Serialize(proj)); Log("curve pieces=" + proj.Segs.Count + " total=" + Total.ToString("0.00")); return; }
+                Play();
             };
         }
 
@@ -407,6 +409,7 @@ namespace MiniCut
                 case "volume": return U(v => v <= .0001 ? "-∞dB" : F(20 * Math.Log10(v), "0.0", "dB"), t => { var d = P(t, "dB"); return d == null ? null : Math.Pow(10, d.Value / 20); });
                 case "fadein": case "fadeout": return U(v => F(v, "0.0", "s"), t => P(t, "s"));
                 case "speed": return U(v => F(v, "0.00", "x"), t => P(t, "x"));
+                case "pitch": return U(v => (Math.Round(v) > 0 ? "+" : "") + Math.Round(v).ToString(CultureInfo.InvariantCulture) + " st", t => P(t, "st"));
                 case "rotation": case "maskrot": return U(v => F(v, "0.00", "°"), t => P(t, "°"));
                 default: return U(v => F(v, fmt, ""), t => P(t, ""));
             }
@@ -462,7 +465,15 @@ namespace MiniCut
             RefreshDetails(); Dirty();
         }
         Action R(Action<Seg> a) => () => a(sel);
-        TextBlock speedInfo; string detailSub = "Básico";
+        TextBlock speedInfo; CheckBox pitchChk; WrapPanel voicePanel;
+        static readonly Dictionary<string, string[]> Subs = new() { ["Video"] = new[] { "Básico", "Máscara" }, ["Audio"] = new[] { "Básico", "Cambio de voz" }, ["Velocidad"] = new[] { "Estándar", "Curva", "Efectos de velocidad" } };
+        static readonly Dictionary<string, string[]> SubSections = new()
+        {
+            ["Video/Básico"] = new[] { "xform", "xform2", "blend" }, ["Video/Máscara"] = new[] { "mask" }, ["Audio/Básico"] = new[] { "vol", "fade" }, ["Audio/Cambio de voz"] = new[] { "voice" },
+            ["Velocidad/Estándar"] = new[] { "speed" }, ["Velocidad/Curva"] = new[] { "curve" }, ["Velocidad/Efectos de velocidad"] = new[] { "speedfx" },
+        };
+        readonly Dictionary<string, string> subSel = new();
+        string Sub => Subs.TryGetValue(detailTab, out var l) ? (subSel.TryGetValue(detailTab, out var x) && l.Contains(x) ? x : l[0]) : null;
 
         WrapPanel blendPanel, maskPanel, fontPanel; TextBlock blendHint;
         void FillFonts()
@@ -512,17 +523,24 @@ namespace MiniCut
             Row("mask", "maskw", "Ancho", 0.05, 2); Row("mask", "maskh", "Alto", 0.05, 2); Row("mask", "maskrot", "Rotación °", -180, 180, false, "0"); Row("mask", "maskfeather", "Difuminado", 0, 1); Row("mask", "maskround", "Esquinas redondeadas", 0, 1);
             var inv = new CheckBox { Content = "Invertir máscara", Foreground = Br("#e9e9ee"), Margin = new Thickness(0, 8, 0, 0) };
             inv.Click += (_, _) => { if (sel == null) return; Push(); sel.MaskInvert = inv.IsChecked == true; Dirty(); }; ((Panel)secs["mask"]).Children.Add(inv); secs["mask"].Tag = inv;
+            Section("voice", "Cambio de voz"); voicePanel = new WrapPanel(); ((Panel)secs["voice"]).Children.Add(voicePanel);
+            foreach (var vo in Opts.Voices) { var vn = vo.Name; var vb = new Button { Content = vn, Tag = vn, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 4, 4, 0) }; vb.Click += (_, _) => { if (sel == null) return; Push(); sel.Voice = vn; RefreshDetails(); Dirty(); }; voicePanel.Children.Add(vb); }
+            ((Panel)secs["voice"]).Children.Add(new TextBlock { Style = (Style)FindResource("Lbl"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Text = "Efectos de voz sin IA: cambian el tono y el timbre con filtros de audio. Se oyen al terminar de procesarse y se aplican igual al exportar." });
+            Section("curve", "Curva de velocidad"); BuildCurveUi();
+            Section("speedfx", "Efectos de velocidad"); BuildSpeedFxUi();
             Section("speed", "Velocidad"); Row("speed", "speed", "Velocidad", 0.25, 4);
             speedInfo = new TextBlock { Foreground = Br("#d5dde0"), FontSize = 12, Margin = new Thickness(0, 10, 0, 0) }; ((Panel)secs["speed"]).Children.Add(speedInfo);
+            pitchChk = new CheckBox { Content = "Cambiar el tono con la velocidad", Foreground = Br("#e9e9ee"), Margin = new Thickness(0, 12, 0, 0) };
+            pitchChk.Click += (_, _) => { if (sel == null) return; Push(); sel.PitchWithSpeed = pitchChk.IsChecked == true; Dirty(); }; ((Panel)secs["speed"]).Children.Add(pitchChk);
             var rs = new Button { Content = "Restablecer", HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) }; rs.Click += (_, _) => { if (sel != null) rows["speed"].S.Value = 1; }; ((Panel)secs["speed"]).Children.Add(rs);
-            Section("vol", "Básico", R(sg => { sg.Volume = 1; sg.Kfs.RemoveAll(k => k.Prop == "volume"); })); Row("vol", "volume", "Volumen", 0, 2, true);
+            Section("vol", "Básico", R(sg => { sg.Volume = 1; sg.Kfs.RemoveAll(k => k.Prop == "volume"); })); Row("vol", "volume", "Volumen", 0, 2, true); Row("vol", "pitch", "Tono", -12, 12, false, "0");
             Section("fade", "Fundidos", R(sg => { sg.FadeIn = 0; sg.FadeOut = 0; })); Row("fade", "fadein", "Fundido de entrada", 0, 5, false, "0.0"); Row("fade", "fadeout", "Fundido de salida", 0, 5, false, "0.0");
         }
 
         double ReadStatic(string k) => k switch
         {
             "textsize" => sel.TextSize, "opacity" => sel.Opacity, "brightness" => sel.Brightness, "contrast" => sel.Contrast, "saturation" => sel.Saturation,
-            "speed" => sel.Speed, "fadein" => sel.FadeIn, "fadeout" => sel.FadeOut, "maskw" => sel.MaskW, "maskh" => sel.MaskH, "maskrot" => sel.MaskRot, "maskfeather" => sel.MaskFeather, "maskround" => sel.MaskRound, _ => sel.Get(k, Rel)
+            "speed" => sel.Speed, "fadein" => sel.FadeIn, "fadeout" => sel.FadeOut, "pitch" => sel.Pitch, "maskw" => sel.MaskW, "maskh" => sel.MaskH, "maskrot" => sel.MaskRot, "maskfeather" => sel.MaskFeather, "maskround" => sel.MaskRound, _ => sel.Get(k, Rel)
         };
 
         // like CapCut's property tabs: only the pages that make sense for the selected clip type
@@ -547,21 +565,22 @@ namespace MiniCut
             updating = true;
             bool has = sel != null; var k = sel?.Kind;
             if (k != detailKind) BuildDetailTabs(k);
-            bool sub = has && detailTab == "Video" && k is "video" or "image"; DetailSub.Visibility = sub ? Visibility.Visible : Visibility.Collapsed;
-            if (sub)
+            var sbn = has && k != "text" ? Sub : null; DetailSub.Visibility = sbn != null ? Visibility.Visible : Visibility.Collapsed;
+            if (sbn != null)
             {
                 SubGrid.Children.Clear();
-                foreach (var n in new[] { "Básico", "Máscara" })
-                { var nn = n; bool on = n == detailSub; var sb = new Button { Content = n, Margin = new Thickness(0), Padding = new Thickness(6, 5, 6, 5), Background = Br(on ? "#2c383d" : "transparent"), Foreground = Br(on ? "#ffffff" : "#aab6bb") }; sb.Click += (_, _) => { detailSub = nn; RefreshDetails(); }; SubGrid.Children.Add(sb); }
+                foreach (var n in Subs[detailTab])
+                { var nn = n; bool on = n == sbn; var sb = new Button { Content = n, Margin = new Thickness(0), Padding = new Thickness(6, 5, 6, 5), FontSize = 12, Background = Br(on ? "#2c383d" : "transparent"), Foreground = Br(on ? "#ffffff" : "#aab6bb") }; sb.Click += (_, _) => { subSel[detailTab] = nn; RefreshDetails(); }; SubGrid.Children.Add(sb); }
             }
-            var active = sub && detailSub == "Máscara" ? new[] { "mask" } : TabSections.TryGetValue(detailTab, out var sl) && has ? sl : Array.Empty<string>();
+            var active = !has ? Array.Empty<string>() : sbn != null ? SubSections[detailTab + "/" + sbn] : TabSections.TryGetValue(detailTab, out var sl) ? sl : Array.Empty<string>();
             void Vis(string key, bool v) => secs[key].Visibility = v && active.Contains(key) ? Visibility.Visible : Visibility.Collapsed;
             Vis("text", k == "text"); Vis("xform", k is "video" or "image" or "text"); Vis("xform2", k is "video" or "image"); Vis("adjust", k is "video" or "image");
-            Vis("blend", k is "video" or "image"); Vis("mask", k is "video" or "image"); Vis("speed", k is "video" or "audio"); Vis("vol", k is "video" or "audio"); Vis("fade", k is "video" or "image" or "audio");
+            Vis("voice", k is "video" or "audio"); Vis("curve", k is "video" or "audio"); Vis("speedfx", k is "video" or "audio"); Vis("blend", k is "video" or "image"); Vis("mask", k is "video" or "image"); Vis("speed", k is "video" or "audio"); Vis("vol", k is "video" or "audio"); Vis("fade", k is "video" or "image" or "audio");
             if (has)
             {
                 foreach (var (key, r) in rows) { var v = ReadStatic(key); r.S.Value = v; ShowRow(key, v); }
-                speedInfo.Text = $"Duración    {sel.Dur * sel.Speed:0.0}s   →   {sel.Dur:0.0}s";
+                speedInfo.Text = $"Duración    {sel.Dur * sel.Speed:0.0}s   →   {sel.Dur:0.0}s"; pitchChk.IsChecked = sel.PitchWithSpeed;
+                foreach (Button b in voicePanel.Children) { bool on = (string)b.Tag == sel.Voice; b.Background = Br(on ? "#1c3a40" : "#1c282d"); b.Foreground = Br(on ? "#25f4ee" : "#cfd8db"); }
                 tbText.Text = sel.Text; ((CheckBox)secs["xform2"].Tag).IsChecked = sel.Flip; ((CheckBox)secs["mask"].Tag).IsChecked = sel.MaskInvert;
                 foreach (Button b in blendPanel.Children) { bool on = (string)b.Tag == sel.Blend; b.Background = Br(on ? "#1c3a40" : "#1c282d"); b.Foreground = Br(on ? "#25f4ee" : "#cfd8db"); }
                 foreach (Button b in maskPanel.Children) { bool on = (string)b.Tag == sel.Mask; b.Background = Br(on ? "#1c3a40" : "#1c282d"); b.Foreground = Br(on ? "#25f4ee" : "#cfd8db"); }
@@ -584,6 +603,7 @@ namespace MiniCut
                 case "saturation": sel.Saturation = v; break;
                 case "fadein": sel.FadeIn = v; break;
                 case "fadeout": sel.FadeOut = v; break;
+                case "pitch": sel.Pitch = Math.Round(v); break;
                 case "maskw": sel.MaskW = v; break; case "maskh": sel.MaskH = v; break; case "maskrot": sel.MaskRot = v; break; case "maskfeather": sel.MaskFeather = v; break; case "maskround": sel.MaskRound = v; break;
                 case "speed": { var used = sel.Dur * sel.Speed; sel.Speed = v; sel.Dur = used / v; break; }
                 default: sel.Set(key, v, Rel); break;
@@ -886,12 +906,31 @@ namespace MiniCut
         void Dirty() { Redraw(); RebuildAudio(); Sync(!playing); Touch(); }
 
         // clips whose audio is decoded and at normal speed go through the mixer (gain up to +6 dB); the rest fall back to MediaElement.Volume
+        readonly HashSet<string> procReady = new(); readonly HashSet<(string raw, string chain)> procQueue = new(); DispatcherTimer procTimer;
+        static bool NeedsProc(Seg s) => s.Speed != 1 || s.Pitch != 0 || s.Voice != "Original";
+        // PCM the live mixer should play for this clip: the original, or a processed copy (pitch / voice / speed) made in the background; null while it is still being made
+        string MixRaw(Seg s, out double src)
+        {
+            src = s.Src; var m = media.FirstOrDefault(x => x.Path == s.Path); if (m?.Raw == null) return null;
+            if (!NeedsProc(s)) return m.Raw;
+            var chain = Ff.AudioChain(s); var pr = Ff.ProcPath(m.Raw, chain);
+            if (procReady.Contains(pr) || (File.Exists(pr) && procReady.Add(pr))) { src = s.Src / s.Speed; return pr; }
+            if (procQueue.Add((m.Raw, chain))) { if (procTimer == null) { procTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) }; procTimer.Tick += (_, _) => RunProc(); } procTimer.Stop(); procTimer.Start(); }
+            return null;
+        }
+        async void RunProc()
+        {
+            procTimer.Stop(); var todo = procQueue.ToList(); procQueue.Clear(); if (todo.Count == 0) return;
+            Busy.Text = "Procesando audio…"; await Task.WhenAll(todo.Select(t => Task.Run(() => Ff.MakeProc(t.raw, t.chain)))); if (procQueue.Count == 0) Busy.Text = "";
+            RebuildAudio(); Sync(!playing);
+        }
         void RebuildAudio()
         {
-            audio.SetClips(proj.Segs.Where(s => s.Speed == 1 && !proj.Muted.Contains(s.Track) && (s.Kind == "audio" || (s.Kind == "video" && s.HasAudio)))
-                .Select(s => (s, m: media.FirstOrDefault(x => x.Path == s.Path))).Where(x => x.m?.Raw != null).Select(x => AClip.From(x.s, x.m.Raw)).ToArray());
+            var l = new List<AClip>();
+            foreach (var s in proj.Segs.Where(s => !proj.Muted.Contains(s.Track) && (s.Kind == "audio" || (s.Kind == "video" && s.HasAudio)))) { var raw = MixRaw(s, out var src); if (raw != null) l.Add(AClip.From(s, raw, src)); }
+            audio.SetClips(l.ToArray());
         }
-        bool UsesEngine(Seg s) => audio.Ready && s.Speed == 1 && media.Any(m => m.Path == s.Path && m.Raw != null);
+        bool UsesEngine(Seg s) => audio.Ready && MixRaw(s, out _) != null;
 
         void Play(object s = null, RoutedEventArgs e = null)
         {

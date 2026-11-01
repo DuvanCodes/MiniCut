@@ -53,6 +53,39 @@ namespace MiniCut
             new("Desvanecido", "Retro", 1, 1, 1, .1, .1, .1, .8, .8), new("Invierno", "Fríos", .88, .98, 1.15, 0, .01, .05, .9, 1.1),
             new("Verano", "Cálidos", 1.1, 1.05, .9, .03, .03, 0, 1.2, 1.0), new("Contraste B/N", "B/N", 1, 1, 1, 0, 0, 0, 0, 1.3),
         };
+        // voice changer (no AI): a pitch shift in semitones plus an ffmpeg filter chain
+        public record Voice(string Name, double Semi, string Af);
+        public static readonly Voice[] Voices =
+        {
+            new("Original", 0, ""), new("Ardilla", 7, ""), new("Voz grave", -6, "lowpass=f=6000"), new("Monstruo", -9, "aecho=0.6:0.5:30:0.4"),
+            new("Robot", 0, "afftfilt=real='hypot(re,im)*cos(0)':imag='hypot(re,im)*sin(0)':win_size=512:overlap=0.75,volume=5,alimiter=limit=0.95"),
+            new("Alienígena", 4, "tremolo=f=9:d=0.7"), new("Eco", 0, "aecho=0.8:0.88:60:0.4"), new("Cueva", 0, "aecho=0.7:0.7:180|360:0.45|0.3"),
+            new("Coro", 0, "chorus=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3"), new("Teléfono", 0, "highpass=f=500,lowpass=f=3000,volume=1.8"),
+            new("Megáfono", 0, "highpass=f=600,lowpass=f=4200,volume=2.2,alimiter=limit=0.9"),
+        };
+        public static Voice VoiceOf(string n) => Voices.FirstOrDefault(v => v.Name == n) ?? Voices[0];
+
+        // speed curves as (position in the source 0..1, speed) points; applying one cuts the clip into pieces with constant speeds
+        public record Curve(string Name, (double u, double v)[] Pts);
+        public static readonly Curve[] Curves =
+        {
+            new("Normal", new[] { (0.0, 1.0), (1.0, 1.0) }), new("Montaje", new[] { (0.0, 2.0), (0.25, .5), (0.5, 2.0), (0.75, .5), (1.0, 2.0) }),
+            new("Héroe", new[] { (0.0, 1.0), (0.3, 1.0), (0.5, .3), (0.7, 1.0), (1.0, 2.0) }), new("Bala", new[] { (0.0, 2.0), (0.35, .25), (0.65, .25), (1.0, 2.0) }),
+            new("Salto", new[] { (0.0, 1.0), (0.5, 3.5), (1.0, 1.0) }), new("Flash entrada", new[] { (0.0, 3.5), (0.35, 1.0), (1.0, 1.0) }), new("Flash salida", new[] { (0.0, 1.0), (0.65, 1.0), (1.0, 3.5) }),
+        };
+        public static readonly Curve[] SpeedFx =
+        {
+            new("Cámara lenta", new[] { (0.0, .5), (1.0, .5) }), new("Súper lenta", new[] { (0.0, .25), (1.0, .25) }), new("Time-lapse", new[] { (0.0, 4.0), (1.0, 4.0) }),
+            new("Aceleración", new[] { (0.0, .5), (1.0, 3.0) }), new("Frenazo", new[] { (0.0, 3.0), (1.0, .4) }), new("Pulso", new[] { (0.0, 1.0), (0.25, .4), (0.5, 1.0), (0.75, .4), (1.0, 1.0) }),
+            new("Impacto", new[] { (0.0, 1.0), (0.4, 1.0), (0.5, .25), (0.6, 1.0), (1.0, 1.0) }),
+        };
+        public static double CurveAt((double u, double v)[] p, double u)
+        {
+            if (u <= p[0].u) return p[0].v;
+            for (int i = 0; i < p.Length - 1; i++) if (u <= p[i + 1].u) return p[i].v + (u - p[i].u) / Math.Max(1e-9, p[i + 1].u - p[i].u) * (p[i + 1].v - p[i].v);
+            return p[^1].v;
+        }
+
         // blend modes read from CapCut's own MixMode shaders; Expr is the 8-bit formula (A = layer below, B = this layer) used by ffmpeg's blend filter,
         // Neutral is the colour that leaves the layer below unchanged (what the clip is padded with outside its edges)
         public record Blend(string Name, string Neutral, string Expr);
@@ -126,7 +159,7 @@ namespace MiniCut
         public string Filter { get; set; } = "Ninguno"; public string Effect { get; set; } = "Ninguno"; public bool Flip { get; set; }
         public double FadeIn { get; set; } public double FadeOut { get; set; }
         public string Trans { get; set; } = "Ninguna"; public double TransDur { get; set; } = 0.6;
-        public string Blend { get; set; } = "Normal"; public string Font { get; set; } = "";
+        public string Blend { get; set; } = "Normal"; public string Voice { get; set; } = "Original"; public double Pitch { get; set; } public bool PitchWithSpeed { get; set; } public string Font { get; set; } = "";
         public string Mask { get; set; } = "Ninguna"; public double MaskW { get; set; } = .5; public double MaskH { get; set; } = .5; public double MaskRot { get; set; } public double MaskFeather { get; set; } public double MaskRound { get; set; } public bool MaskInvert { get; set; }
 
         // mask coverage 0..1 as an ffmpeg expression in pixels (X,Y,W,H of the clip frame); same maths as the preview shader in Grade.cs
@@ -278,6 +311,24 @@ namespace MiniCut
             return exe == "ffmpeg" ? err.Result : o;
         }
 
+        // everything that happens to a clip's sound before volume/fades: pitch shift + voice effect (duration-preserving), then speed (tempo, or pitch-follows-speed)
+        public static string AudioChain(Seg s)
+        {
+            var v = Opts.VoiceOf(s.Voice); var l = new List<string>(); double semi = s.Pitch + v.Semi;
+            if (Math.Abs(semi) > .01) { double f = Math.Pow(2, semi / 12); l.Add($"asetrate={F(44100 * f)}"); l.Add("aresample=44100"); l.Add(Atempo(1 / f)); }
+            if (v.Af != "") l.Add(v.Af);
+            if (s.Speed != 1) l.Add(s.PitchWithSpeed ? $"asetrate={F(44100 * s.Speed)},aresample=44100" : Atempo(s.Speed));
+            return string.Join(",", l);
+        }
+        // processed copy of a clip's decoded PCM (pitch / voice / speed baked in) that the live mixer plays instead of the original
+        public static string ProcPath(string raw, string chain) => System.IO.Path.Combine(Cache, "pr_" + Key(raw + "|" + chain) + ".raw");
+        public static bool MakeProc(string raw, string chain)
+        {
+            var o = ProcPath(raw, chain); if (File.Exists(o)) return true; var tmp = o + ".part";
+            Exec("ffmpeg", $"-y -v error -nostdin -f s16le -ar 44100 -ac 2 -i \"{raw}\" -af \"{chain}\" -f s16le -ar 44100 -ac 2 \"{tmp}\"");
+            if (File.Exists(tmp)) File.Move(tmp, o, true); return File.Exists(o);
+        }
+
         static string Atempo(double s)
         {
             var l = new List<string>();
@@ -359,7 +410,7 @@ namespace MiniCut
                 foreach (var s in p.Segs.Where(s => ((s.Kind == "video" && s.HasAudio) || s.Kind == "audio") && !p.Muted.Contains(s.Track)))
                 {
                     var a = new List<string>();
-                    if (s.Speed != 1) a.Add(Atempo(s.Speed));
+                    var chain = AudioChain(s); if (chain != "") a.Add(chain);
                     a.Add("aresample=44100"); a.Add("aformat=channel_layouts=stereo");
                     if (s.Of("volume").Count > 0 || s.Volume != 1) a.Add($"volume='{s.Expr("volume", 0)}':eval=frame");
                     if (s.FadeIn > 0) a.Add($"afade=t=in:st=0:d={F(s.FadeIn)}");

@@ -47,3 +47,7 @@ MiniCut no descarga nada de CapCut. Cada persona añade su propio contenido:
 - **Filtros**: pestaña Filtros → *Mis filtros* → importar LUT `.cube` 3D (clic derecho para eliminar). Se guardan en `%LOCALAPPDATA%\MiniCut\Luts`.
 - **Música**: pestaña Audio → *Mi biblioteca* → elegir una carpeta (se escanean mp3/wav/m4a/aac/ogg/flac).
 - **Fuentes**: panel Texto → Fuente → *＋ Fuente…* (`.ttf`/`.otf`), guardadas en `%LOCALAPPDATA%\MiniCut\Fonts`.
+
+## Audio y velocidad (v0.10)
+- **Tono** (±12 semitonos), **cambio de voz** (11 efectos sin IA) y **cambiar tono con la velocidad**: cadena de filtros ffmpeg (`Ff.AudioChain`). La vista previa reproduce una copia procesada del audio decodificado; la exportación aplica la misma cadena.
+- **Curvas de velocidad** y **efectos de velocidad**: se aplican cortando el clip en 12 trozos de velocidad constante (preview y exportación coinciden). Dev hook: `MINICUT_CURVE=<nombre>`.
