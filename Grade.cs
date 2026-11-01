@@ -19,6 +19,8 @@ float4 P0 : register(c0); // brightness, contrast, saturation, look
 float4 P1 : register(c1); // effect, texelW, texelH, seed
 float4 P2 : register(c2); // look (id >= 9): mul rgb, saturation
 float4 P3 : register(c3); // look (id >= 9): add rgb, contrast
+float4 P4 : register(c4); // mask: type (0 none, 1 linear, 2 mirror, 3 circle, 4 rect, 5 heart), width, height, rotation(rad)
+float4 P5 : register(c5); // mask: feather, round corner, invert, unused
 float4 main(float2 uv : TEXCOORD) : COLOR {
   float fx = P1.x; float2 t = P1.yz; float2 u = uv;
   if (fx > 5.5 && fx < 6.5) { float2 g = t * 14; u = (floor(uv / g) + 0.5) * g; }
@@ -62,27 +64,40 @@ float4 main(float2 uv : TEXCOORD) : COLOR {
   if (fx > 2.5 && fx < 3.5) { float2 d = uv - 0.5; c *= saturate(1 - dot(d, d) * 2.2); }
   if (fx > 9.5 && fx < 10.5) c *= 0.8 + 0.2 * step(0.5, frac(uv.y / (t.y * 4)));
   if (fx > 4.5 && fx < 5.5) c += (frac(sin(dot(uv * 1000 + P1.w, float2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.14;
-  return float4(saturate(c) * col.a, col.a);
+  float m = 1;
+  if (P4.x > 0.5) {
+    float2 p = uv - 0.5; float cs = cos(P4.w), sn = sin(P4.w);
+    float2 q = float2(p.x * cs + p.y * sn, -p.x * sn + p.y * cs) / (0.5 * P4.yz);
+    float d = q.y;
+    if (P4.x > 1.5 && P4.x < 2.5) d = abs(q.y) - 1;
+    else if (P4.x > 2.5 && P4.x < 3.5) d = length(q) - 1;
+    else if (P4.x > 3.5 && P4.x < 4.5) { float rr = saturate(P5.y); float2 a = abs(q) - 1 + rr; d = length(max(a, 0)) + min(max(a.x, a.y), 0) - rr; }
+    else if (P4.x > 4.5) { float x = q.x * 1.3, y = -q.y * 1.3 + 0.2; float t2 = x * x + y * y - 1; d = t2 * t2 * t2 - x * x * y * y * y; }
+    float fe = max(P5.x * 0.5, 0.002); m = saturate((fe - d) / (2 * fe));
+    if (P5.z > 0.5) m = 1 - m;
+  }
+  return float4(saturate(c) * col.a * m, col.a * m);
 }";
         [DllImport("d3dcompiler_47.dll", CharSet = CharSet.Ansi)]
         static extern int D3DCompile(IntPtr src, UIntPtr len, string name, IntPtr defs, IntPtr inc, string entry, string target, uint f1, uint f2, out IntPtr code, out IntPtr err);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate IntPtr GetPtr(IntPtr self);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate UIntPtr GetSize(IntPtr self);
 
-        public static readonly PixelShader Shader = Compile();
+        public static readonly PixelShader Shader = Compile(Hlsl, out Error);
         public static string Error;
         public static bool Ok => Shader != null;
 
-        static PixelShader Compile()
+        public static PixelShader Compile(string hlsl, out string error)
         {
+            error = null;
             try
             {
-                var bytes = Encoding.ASCII.GetBytes(Hlsl); var h = Marshal.AllocHGlobal(bytes.Length); Marshal.Copy(bytes, 0, h, bytes.Length);
+                var bytes = Encoding.ASCII.GetBytes(hlsl); var h = Marshal.AllocHGlobal(bytes.Length); Marshal.Copy(bytes, 0, h, bytes.Length);
                 var hr = D3DCompile(h, (UIntPtr)bytes.Length, "grade", IntPtr.Zero, IntPtr.Zero, "main", "ps_3_0", 0, 0, out var code, out var err);
                 Marshal.FreeHGlobal(h);
                 if (hr != 0)
                 {
-                    if (err != IntPtr.Zero) Error = Marshal.PtrToStringAnsi(Marshal.GetDelegateForFunctionPointer<GetPtr>(Marshal.ReadIntPtr(Marshal.ReadIntPtr(err), 3 * IntPtr.Size))(err));
+                    if (err != IntPtr.Zero) error = Marshal.PtrToStringAnsi(Marshal.GetDelegateForFunctionPointer<GetPtr>(Marshal.ReadIntPtr(Marshal.ReadIntPtr(err), 3 * IntPtr.Size))(err));
                     return null;
                 }
                 var vt = Marshal.ReadIntPtr(code);
@@ -91,7 +106,7 @@ float4 main(float2 uv : TEXCOORD) : COLOR {
                 var buf = new byte[n]; Marshal.Copy(p, buf, 0, n);
                 var ps = new PixelShader(); ps.SetStreamSource(new MemoryStream(buf)); return ps;
             }
-            catch (Exception ex) { Error = ex.Message; return null; }
+            catch (Exception ex) { error = ex.Message; return null; }
         }
 
         public static readonly DependencyProperty InputProperty = RegisterPixelShaderSamplerProperty("Input", typeof(Grade), 0);
@@ -101,7 +116,15 @@ float4 main(float2 uv : TEXCOORD) : COLOR {
         public static readonly DependencyProperty P2Property = DependencyProperty.Register("P2", typeof(Point4D), typeof(Grade), new UIPropertyMetadata(new Point4D(1, 1, 1, 1), PixelShaderConstantCallback(2)));
         public static readonly DependencyProperty P3Property = DependencyProperty.Register("P3", typeof(Point4D), typeof(Grade), new UIPropertyMetadata(new Point4D(0, 0, 0, 1), PixelShaderConstantCallback(3)));
 
-        public Grade() { PixelShader = Shader; UpdateShaderValue(InputProperty); UpdateShaderValue(P0Property); UpdateShaderValue(P1Property); UpdateShaderValue(P2Property); UpdateShaderValue(P3Property); }
+        public static readonly DependencyProperty P4Property = DependencyProperty.Register("P4", typeof(Point4D), typeof(Grade), new UIPropertyMetadata(new Point4D(0, 1, 1, 0), PixelShaderConstantCallback(4)));
+        public static readonly DependencyProperty P5Property = DependencyProperty.Register("P5", typeof(Point4D), typeof(Grade), new UIPropertyMetadata(new Point4D(0, 0, 0, 0), PixelShaderConstantCallback(5)));
+        public void SetMask(Seg s)
+        {
+            int t = Math.Max(0, Array.IndexOf(Opts.Masks, s.Mask));
+            SetValue(P4Property, new Point4D(t, Math.Max(.01, s.MaskW), Math.Max(.01, s.MaskH), s.MaskRot * Math.PI / 180)); SetValue(P5Property, new Point4D(s.MaskFeather, s.MaskRound, s.MaskInvert ? 1 : 0, 0));
+        }
+
+        public Grade() { PixelShader = Shader; UpdateShaderValue(P4Property); UpdateShaderValue(P5Property); UpdateShaderValue(InputProperty); UpdateShaderValue(P0Property); UpdateShaderValue(P1Property); UpdateShaderValue(P2Property); UpdateShaderValue(P3Property); }
         public Brush Input { get => (Brush)GetValue(InputProperty); set => SetValue(InputProperty, value); }
         public void Set(double bright, double contrast, double sat, int look, int fx, double w, double h, double seed)
         {

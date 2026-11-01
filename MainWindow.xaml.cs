@@ -28,6 +28,7 @@ namespace MiniCut
         static double TrackTop(int r) { double y = RULER; for (int i = 0; i < r; i++) y += TrackH[i]; return y; }
         static int RowAt(double y) { double t = RULER; for (int i = 0; i < TrackH.Length; i++) { t += TrackH[i]; if (y < t) return i; } return TrackH.Length - 1; }
         readonly AudioEngine audio = new();
+        readonly Canvas Lower = new() { IsHitTestVisible = false }; VisualBrush lowerBrush; // Vídeo 1 layers; blend modes on Vídeo 2 read this as their backdrop
         readonly Dictionary<Seg, FrameworkElement> blocks = new();
         readonly Dictionary<(string, int), ImageBrush> cellBrushes = new();
         Media dragging; Rectangle ghost; bool monitorPlaying;
@@ -58,11 +59,10 @@ namespace MiniCut
 
         public MainWindow()
         {
-            InitializeComponent(); Directory.CreateDirectory(Tmp);
+            InitializeComponent(); Stage.Children.Add(Lower); Directory.CreateDirectory(Tmp);
             foreach (var old in Directory.GetFiles(Tmp, "p*_*.mp4").Concat(Directory.GetFiles(Tmp, "frame_*.png"))) try { File.Delete(old); } catch { }
             playTimer.Tick += (_, _) => Tick(); audio.Init();
             TL.AllowDrop = true; TL.DragOver += TlDragOver; TL.DragLeave += (_, _) => { if (ghost != null) ghost.Visibility = Visibility.Collapsed; }; TL.Drop += TlDrop;
-            for (int i = 0; i < TrackNames.Length; i++) TrackLabels.Children.Add(new TextBlock { Text = TrackNames[i], Height = TrackH[i], Foreground = (Brush)new BrushConverter().ConvertFromString("#8d8d98"), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
             BuildDetails(); CanvasStyle(); ShowTab(0); RefreshDetails(); Redraw(); Sync(true); InitHome();
             Log("Grade shader ok=" + Grade.Ok + " " + Grade.Error);
             // dev hook: MINICUT_AUTOPLAY=<project.minicut> loads it and starts playback
@@ -77,7 +77,7 @@ namespace MiniCut
         {
             var b = new BitmapImage(); b.BeginInit(); b.CacheOption = BitmapCacheOption.OnLoad; b.CreateOptions = BitmapCreateOptions.IgnoreImageCache; b.UriSource = new Uri(path); b.EndInit(); b.Freeze(); return b;
         }
-        void CanvasStyle() { var (sw, sh) = Opts.Size(proj.Canvas); Stage.Width = sw; Stage.Height = sh; foreach (var k in layers.Keys.ToList()) DropLayer(k); AspectBtn.Content = proj.Canvas + " ▾"; DrawGrid(sw, sh); }
+        void CanvasStyle() { var (sw, sh) = Opts.Size(proj.Canvas); Stage.Width = sw; Stage.Height = sh; Lower.Width = sw; Lower.Height = sh; lowerBrush = new VisualBrush(Lower) { Viewbox = new Rect(0, 0, sw, sh), ViewboxUnits = BrushMappingMode.Absolute, Stretch = Stretch.Fill }; foreach (var k in layers.Keys.ToList()) DropLayer(k); AspectBtn.Content = proj.Canvas + " ▾"; DrawGrid(sw, sh); }
 
         // ---------- player controls: rule-of-thirds grid, quick aspect ratio, fullscreen ----------
         void DrawGrid(int w, int h)
@@ -366,6 +366,7 @@ namespace MiniCut
             ((Panel)secs[sec]).Children.Add(g); rows[key] = new RowUi { S = s, L = l, K = kb, Label = label, Fmt = fmt };
         }
 
+        WrapPanel blendPanel, maskPanel; TextBlock blendHint;
         void BuildDetails()
         {
             Section("text", "Texto");
@@ -383,6 +384,15 @@ namespace MiniCut
             fl.Click += (_, _) => { if (sel == null) return; Push(); sel.Flip = fl.IsChecked == true; Dirty(); }; ((Panel)secs["xform2"]).Children.Add(fl); secs["xform2"].Tag = fl;
             Section("adjust", "Ajuste"); Row("adjust", "brightness", "Brillo", -.5, .5, false); Row("adjust", "contrast", "Contraste", 0, 2, false); Row("adjust", "saturation", "Saturación", 0, 3, false);
             var info = new TextBlock { Style = (Style)FindResource("Lbl"), Margin = new Thickness(0, 8, 0, 0), Name = "FxInfo" }; ((Panel)secs["adjust"]).Children.Add(info); secs["adjust"].Tag = info;
+            Section("blend", "Mezcla"); blendPanel = new WrapPanel(); ((Panel)secs["blend"]).Children.Add(blendPanel);
+            foreach (var b in Opts.Blends) { var bn = b.Name; var bt = new Button { Content = bn, Tag = bn, Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(0, 4, 4, 0), FontSize = 11.5 }; bt.Click += (_, _) => { if (sel?.Track == 2) { Busy.Text = "La mezcla funciona en clips de Vídeo 2 (sobre Vídeo 1)"; return; } Edit(sg => sg.Blend = bn, true); }; blendPanel.Children.Add(bt); }
+            blendHint = new TextBlock { Style = (Style)FindResource("Lbl"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap, Text = "Combina este clip con el que hay debajo usando las fórmulas de CapCut. Colócalo en Vídeo 2 sobre un clip de Vídeo 1." };
+            ((Panel)secs["blend"]).Children.Add(blendHint);
+            Section("mask", "Máscara"); maskPanel = new WrapPanel(); ((Panel)secs["mask"]).Children.Add(maskPanel);
+            foreach (var mn in Opts.Masks) { var m1 = mn; var mt = new Button { Content = mn, Tag = mn, Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(0, 4, 4, 0), FontSize = 11.5 }; mt.Click += (_, _) => Edit(sg => sg.Mask = m1, true); maskPanel.Children.Add(mt); }
+            Row("mask", "maskw", "Ancho", 0.05, 2); Row("mask", "maskh", "Alto", 0.05, 2); Row("mask", "maskrot", "Rotación °", -180, 180, false, "0"); Row("mask", "maskfeather", "Difuminado", 0, 1); Row("mask", "maskround", "Esquinas redondeadas", 0, 1);
+            var inv = new CheckBox { Content = "Invertir máscara", Foreground = Br("#e9e9ee"), Margin = new Thickness(0, 8, 0, 0) };
+            inv.Click += (_, _) => { if (sel == null) return; Push(); sel.MaskInvert = inv.IsChecked == true; Dirty(); }; ((Panel)secs["mask"]).Children.Add(inv); secs["mask"].Tag = inv;
             Section("speed", "Velocidad"); Row("speed", "speed", "Velocidad ×", 0.25, 4);
             Section("vol", "Volumen"); Row("vol", "volume", "Volumen", 0, 2, true);
             Section("fade", "Fundidos"); Row("fade", "fadein", "Entrada (s)", 0, 5, false, "0.0"); Row("fade", "fadeout", "Salida (s)", 0, 5, false, "0.0");
@@ -391,12 +401,12 @@ namespace MiniCut
         double ReadStatic(string k) => k switch
         {
             "textsize" => sel.TextSize, "opacity" => sel.Opacity, "brightness" => sel.Brightness, "contrast" => sel.Contrast, "saturation" => sel.Saturation,
-            "speed" => sel.Speed, "fadein" => sel.FadeIn, "fadeout" => sel.FadeOut, _ => sel.Get(k, Rel)
+            "speed" => sel.Speed, "fadein" => sel.FadeIn, "fadeout" => sel.FadeOut, "maskw" => sel.MaskW, "maskh" => sel.MaskH, "maskrot" => sel.MaskRot, "maskfeather" => sel.MaskFeather, "maskround" => sel.MaskRound, _ => sel.Get(k, Rel)
         };
 
         // like CapCut's property tabs: only the pages that make sense for the selected clip type
-        static readonly Dictionary<string, string[]> TabSections = new() { ["Video"] = new[] { "xform", "xform2" }, ["Ajuste"] = new[] { "adjust" }, ["Audio"] = new[] { "vol" }, ["Velocidad"] = new[] { "speed" }, ["Animación"] = new[] { "fade" }, ["Texto"] = new[] { "text", "xform" } };
-        static string[] TabsFor(string kind) => kind switch { "video" => new[] { "Video", "Ajuste", "Audio", "Velocidad", "Animación" }, "image" => new[] { "Video", "Ajuste", "Animación" }, "audio" => new[] { "Audio", "Velocidad", "Animación" }, "text" => new[] { "Texto" }, _ => Array.Empty<string>() };
+        static readonly Dictionary<string, string[]> TabSections = new() { ["Video"] = new[] { "xform", "xform2", "blend" }, ["Máscara"] = new[] { "mask" }, ["Ajuste"] = new[] { "adjust" }, ["Audio"] = new[] { "vol" }, ["Velocidad"] = new[] { "speed" }, ["Animación"] = new[] { "fade" }, ["Texto"] = new[] { "text", "xform" } };
+        static string[] TabsFor(string kind) => kind switch { "video" => new[] { "Video", "Ajuste", "Máscara", "Audio", "Velocidad", "Animación" }, "image" => new[] { "Video", "Ajuste", "Máscara", "Animación" }, "audio" => new[] { "Audio", "Velocidad", "Animación" }, "text" => new[] { "Texto" }, _ => Array.Empty<string>() };
         string detailTab = "Video", detailKind;
 
         void BuildDetailTabs(string kind)
@@ -419,11 +429,14 @@ namespace MiniCut
             var active = TabSections.TryGetValue(detailTab, out var sl) && has ? sl : Array.Empty<string>();
             void Vis(string key, bool v) => secs[key].Visibility = v && active.Contains(key) ? Visibility.Visible : Visibility.Collapsed;
             Vis("text", k == "text"); Vis("xform", k is "video" or "image" or "text"); Vis("xform2", k is "video" or "image"); Vis("adjust", k is "video" or "image");
-            Vis("speed", k is "video" or "audio"); Vis("vol", k is "video" or "audio"); Vis("fade", k is "video" or "image" or "audio");
+            Vis("blend", k is "video" or "image"); Vis("mask", k is "video" or "image"); Vis("speed", k is "video" or "audio"); Vis("vol", k is "video" or "audio"); Vis("fade", k is "video" or "image" or "audio");
             if (has)
             {
                 foreach (var (key, r) in rows) { var v = ReadStatic(key); r.S.Value = v; r.L.Text = $"{r.Label}   {v.ToString(r.Fmt, CultureInfo.InvariantCulture)}"; if (r.K != null) { var at = sel.HasKf(key, Rel); r.K.Content = at ? "◆" : "◇"; } }
-                tbText.Text = sel.Text; ((CheckBox)secs["xform2"].Tag).IsChecked = sel.Flip;
+                tbText.Text = sel.Text; ((CheckBox)secs["xform2"].Tag).IsChecked = sel.Flip; ((CheckBox)secs["mask"].Tag).IsChecked = sel.MaskInvert;
+                foreach (Button b in blendPanel.Children) { bool on = (string)b.Tag == sel.Blend; b.Background = Br(on ? "#1c3a40" : "#1c282d"); b.Foreground = Br(on ? "#25f4ee" : "#cfd8db"); }
+                foreach (Button b in maskPanel.Children) { bool on = (string)b.Tag == sel.Mask; b.Background = Br(on ? "#1c3a40" : "#1c282d"); b.Foreground = Br(on ? "#25f4ee" : "#cfd8db"); }
+                blendHint.Visibility = sel.Track == 2 ? Visibility.Visible : Visibility.Collapsed;
                 ((TextBlock)secs["adjust"].Tag).Text = $"Filtro: {sel.Filter}   ·   Efecto: {sel.Effect}";
             }
             updating = false;
@@ -442,6 +455,7 @@ namespace MiniCut
                 case "saturation": sel.Saturation = v; break;
                 case "fadein": sel.FadeIn = v; break;
                 case "fadeout": sel.FadeOut = v; break;
+                case "maskw": sel.MaskW = v; break; case "maskh": sel.MaskH = v; break; case "maskrot": sel.MaskRot = v; break; case "maskfeather": sel.MaskFeather = v; break; case "maskround": sel.MaskRound = v; break;
                 case "speed": { var used = sel.Dur * sel.Speed; sel.Speed = v; sel.Dur = used / v; break; }
                 default: sel.Set(key, v, Rel); break;
             }
@@ -458,8 +472,32 @@ namespace MiniCut
 
         static string KindColor(string k) => k switch { "video" => "#27474f", "image" => "#363f63", "audio" => "#28503a", _ => "#6a5326" };
 
+        // per-track eye / speaker / lock like CapCut's track header: hide the picture, mute the sound, protect the clips from edits
+        void BuildTrackHeaders()
+        {
+            TrackLabels.Children.Clear();
+            for (int i = 0; i < TrackNames.Length; i++)
+            {
+                int t = i; var g = new Grid { Height = TrackH[i] };
+                g.ColumnDefinitions.Add(new ColumnDefinition()); g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                g.Children.Add(new TextBlock { Text = TrackNames[i], Foreground = Br("#8d8d98"), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
+                var ic = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) }; Grid.SetColumn(ic, 1); g.Children.Add(ic);
+                void Btn(List<int> list, string on, string off, string tip)
+                {
+                    bool flag = list.Contains(t);
+                    var b = new Button { Content = flag ? off : on, ToolTip = tip, Padding = new Thickness(3, 1, 3, 1), Margin = new Thickness(0), Background = Br("transparent"), Foreground = Br(flag ? "#25f4ee" : "#6b7a80"), FontSize = 12, FontFamily = new FontFamily("Segoe UI Symbol") };
+                    b.Click += (_, _) => { Push(); if (!list.Remove(t)) list.Add(t); RebuildAudio(); Dirty(); }; ic.Children.Add(b);
+                }
+                if (t <= 2) Btn(proj.Hidden, "👁", "◌", "Mostrar / ocultar la pista");
+                if (t >= 1) Btn(proj.Muted, "🔊", "🔇", "Silenciar / activar el sonido de la pista");
+                Btn(proj.Locked, "🔓", "🔒", "Bloquear / desbloquear la pista");
+                TrackLabels.Children.Add(g);
+            }
+        }
+
         void Redraw()
         {
+            BuildTrackHeaders();
             TL.Children.Clear(); ghost = null; blocks.Clear(); cellBrushes.Clear();
             double w = Math.Max(1200, (Total + 12) * Px); TL.Width = w; TL.Height = TrackTop(TrackNames.Length);
             int step = Px >= 80 ? 1 : Px >= 35 ? 2 : 5;
@@ -536,7 +574,7 @@ namespace MiniCut
             Canvas.SetLeft(g, sg.Start * Px); Canvas.SetTop(g, TrackTop(sg.Track) + 2);
 
             // volume line: only on the selected clip, drag up/down to change gain (0..2 = -inf..+6 dB)
-            if (wave && sg == sel)
+            if (wave && sg == sel && !proj.Locked.Contains(sg.Track))
             {
                 double ly = wy + wh * (1 - Math.Clamp(sg.Volume, 0, 2) / 2);
                 var line = new Rectangle { Width = w, Height = 2, Fill = Br("#ffe27a"), IsHitTestVisible = false }; Canvas.SetTop(line, ly - 1); inner.Children.Add(line);
@@ -556,6 +594,7 @@ namespace MiniCut
             }
 
             bool moved = false, resize = false; double sx = 0, sy = 0, oS = 0, oD = 0;
+            if (proj.Locked.Contains(sg.Track)) { g.Cursor = Cursors.Arrow; g.MouseLeftButtonDown += (_, e) => { Select(sg); e.Handled = true; }; inner.Children.Add(new TextBlock { Text = "🔒", FontSize = 10, Foreground = Br("#25f4ee"), Margin = new Thickness(w - 18, 2, 0, 0) }); return g; }
             g.MouseLeftButtonDown += (_, e) =>
             {
                 Select(sg); var p = e.GetPosition(TL); sx = p.X; sy = p.Y; oS = sg.Start; oD = sg.Dur; moved = false; resize = e.GetPosition(g).X > g.Width - 9;
@@ -602,7 +641,7 @@ namespace MiniCut
         void ZoomChanged(object s, RoutedPropertyChangedEventArgs<double> e) { Px = Zoom.Value; if (TL != null) Redraw(); }
 
         // ---------- live preview: original files decoded in real time and composited on a Canvas, no pre-render ----------
-        class Layer { public Seg S; public FrameworkElement El; public MediaElement Me; public TextBlock Tb; public Grade Fx; public ScaleTransform Sc; public RotateTransform Ro; public TranslateTransform Tr; public bool Ready, Playing, WasActive, Primed; }
+        class Layer { public Seg S; public FrameworkElement El, Top; public Blend Bl; public MediaElement Me; public TextBlock Tb; public Grade Fx; public ScaleTransform Sc; public RotateTransform Ro; public TranslateTransform Tr; public bool Ready, Playing, WasActive, Primed; }
         readonly Dictionary<Seg, Layer> layers = new();
         readonly Stopwatch clock = new(); double p0;
 
@@ -626,14 +665,16 @@ namespace MiniCut
             l.El.RenderTransformOrigin = new Point(.5, .5);
             l.Sc = new ScaleTransform(); l.Ro = new RotateTransform(); l.Tr = new TranslateTransform();
             var tg = new TransformGroup(); tg.Children.Add(l.Sc); tg.Children.Add(l.Ro); tg.Children.Add(l.Tr); l.El.RenderTransform = tg;
-            Panel.SetZIndex(l.El, 10 - s.Track); if (s.Kind == "audio") l.El.Opacity = 0;
-            Stage.Children.Add(l.El); layers[s] = l; return l;
+            if (s.Kind == "audio") { l.Top = l.El; l.El.Opacity = 0; }
+            else { var wrap = new Grid { Width = W, Height = H, IsHitTestVisible = false }; wrap.Children.Add(l.El); l.Top = wrap; }
+            Panel.SetZIndex(l.Top, 10 - s.Track);
+            (s.Track == 2 && s.Kind != "text" ? (Panel)Lower : Stage).Children.Add(l.Top); layers[s] = l; return l;
         }
 
         void DropLayer(Seg s)
         {
             if (!layers.Remove(s, out var l)) return;
-            Stage.Children.Remove(l.El); if (l.Me != null) { l.Me.Stop(); l.Me.Source = null; }
+            (l.Top.Parent as Panel)?.Children.Remove(l.Top); if (l.Me != null) { l.Me.Stop(); l.Me.Source = null; }
         }
 
         static double FadeF(Seg s, double rel) => Math.Clamp(Math.Min(s.FadeIn > 0 ? rel / s.FadeIn : 1, s.FadeOut > 0 ? (s.Dur - rel) / s.FadeOut : 1), 0, 1);
@@ -652,7 +693,9 @@ namespace MiniCut
                 if (s.Kind != "audio")
                 {
                     l.El.Opacity = active ? (s.Kind == "text" ? 1 : s.Opacity) * FadeF(s, rel) : held ? s.Opacity : 0;
-                    Panel.SetZIndex(l.El, (10 - s.Track) * 100000 + (int)(s.Start * 10));
+                    Panel.SetZIndex(l.Top, (10 - s.Track) * 100000 + (int)(s.Start * 10));
+                    int bm = Array.FindIndex(Opts.Blends, b => b.Name == s.Blend);
+                    if (bm > 0 && s.Track != 2 && s.Kind != "text" && Blend.Ok) { l.Bl ??= new Blend { Back = lowerBrush }; l.Bl.Set(bm); l.Top.Effect = l.Bl; } else l.Top.Effect = null;
                     var sc = s.Kind == "text" ? 1 : Math.Max(0.02, s.Get("scale", rel));
                     l.Sc.ScaleX = (s.Flip ? -sc : sc); l.Sc.ScaleY = sc; l.Ro.Angle = s.Kind == "text" ? 0 : s.Get("rotation", rel); l.Tr.X = s.Get("x", rel); l.Tr.Y = s.Get("y", rel);
                     if (s.Kind == "text") { l.Tb.Text = s.Text; l.Tb.FontSize = s.TextSize; l.Tb.Foreground = Br(s.TextColor == "lime" ? "#00ff00" : s.TextColor); }
@@ -663,10 +706,11 @@ namespace MiniCut
                         if (tr.Fade) l.El.Opacity *= pr;
                         l.Sc.ScaleX *= k; l.Sc.ScaleY *= k; l.Tr.X += tr.Dx * W * (1 - pr); l.Tr.Y += tr.Dy * H * (1 - pr);
                     }
+                    if (proj.Hidden.Contains(s.Track)) l.El.Opacity = 0;
                 }
                 if (l.Me == null || !l.Ready) continue;
                 var me = l.Me; double target = s.Src + rel * s.Speed;
-                me.SpeedRatio = s.Speed; bool viaMixer = UsesEngine(s); me.IsMuted = viaMixer || !active; // the mixer plays this clip; MediaElement only supplies the picture
+                me.SpeedRatio = s.Speed; bool viaMixer = UsesEngine(s); me.IsMuted = viaMixer || !active || proj.Muted.Contains(s.Track); // the mixer plays this clip; MediaElement only supplies the picture
                 me.Volume = active && !viaMixer ? Math.Min(1, s.Get("volume", rel) * FadeF(s, rel)) : 0;
                 if (!active)
                 {
@@ -685,9 +729,9 @@ namespace MiniCut
         void ApplyGrade(Layer l, Seg s, int W, int H)
         {
             int look = Opts.Filters.Keys.ToList().IndexOf(s.Filter), fx = Opts.Effects.Keys.ToList().IndexOf(s.Effect);
-            if (!Grade.Ok || (look <= 0 && fx <= 0 && s.Brightness == 0 && s.Contrast == 1 && s.Saturation == 1)) { l.El.Effect = null; return; }
+            if (!Grade.Ok || (look <= 0 && fx <= 0 && s.Brightness == 0 && s.Contrast == 1 && s.Saturation == 1 && s.Mask == "Ninguna")) { l.El.Effect = null; return; }
             l.Fx ??= new Grade(); l.El.Effect = l.Fx;
-            l.Fx.Set(s.Brightness, s.Contrast, s.Saturation, Math.Max(0, look), Math.Max(0, fx), W, H, P % 7);
+            l.Fx.Set(s.Brightness, s.Contrast, s.Saturation, Math.Max(0, look), Math.Max(0, fx), W, H, P % 7); l.Fx.SetMask(s);
         }
 
         // ---------- playback ----------
@@ -707,7 +751,7 @@ namespace MiniCut
         // clips whose audio is decoded and at normal speed go through the mixer (gain up to +6 dB); the rest fall back to MediaElement.Volume
         void RebuildAudio()
         {
-            audio.SetClips(proj.Segs.Where(s => s.Speed == 1 && (s.Kind == "audio" || (s.Kind == "video" && s.HasAudio)))
+            audio.SetClips(proj.Segs.Where(s => s.Speed == 1 && !proj.Muted.Contains(s.Track) && (s.Kind == "audio" || (s.Kind == "video" && s.HasAudio)))
                 .Select(s => (s, m: media.FirstOrDefault(x => x.Path == s.Path))).Where(x => x.m?.Raw != null).Select(x => AClip.From(x.s, x.m.Raw)).ToArray());
         }
         bool UsesEngine(Seg s) => audio.Ready && s.Speed == 1 && media.Any(m => m.Path == s.Path && m.Raw != null);
@@ -774,7 +818,7 @@ namespace MiniCut
             proj.Segs.Add(fz); Select(fz); Dirty();
         }
 
-        void Delete(object s = null, RoutedEventArgs e = null) { if (sel == null) return; Push(); proj.Segs.Remove(sel); sel = null; RefreshDetails(); Dirty(); }
+        void Delete(object s = null, RoutedEventArgs e = null) { if (sel == null || proj.Locked.Contains(sel.Track)) return; Push(); proj.Segs.Remove(sel); sel = null; RefreshDetails(); Dirty(); }
 
         void OnKey(object s, KeyEventArgs e)
         {

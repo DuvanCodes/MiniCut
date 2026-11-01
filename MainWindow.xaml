@@ -96,7 +96,7 @@
     </Border>
 
     <Grid Grid.Row="3" Height="312" Background="#0b1215">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="84"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="128"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
       <StackPanel x:Name="TrackLabels" Margin="0,26,0,0"/>
       <ScrollViewer Grid.Column="1" x:Name="TlScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
         <Canvas x:Name="TL" MouseLeftButtonDown="TlDown" Background="Transparent"/>

@@ -53,6 +53,20 @@ namespace MiniCut
             new("Desvanecido", "Retro", 1, 1, 1, .1, .1, .1, .8, .8), new("Invierno", "Fríos", .88, .98, 1.15, 0, .01, .05, .9, 1.1),
             new("Verano", "Cálidos", 1.1, 1.05, .9, .03, .03, 0, 1.2, 1.0), new("Contraste B/N", "B/N", 1, 1, 1, 0, 0, 0, 0, 1.3),
         };
+        // blend modes read from CapCut's own MixMode shaders; Expr is the 8-bit formula (A = layer below, B = this layer) used by ffmpeg's blend filter,
+        // Neutral is the colour that leaves the layer below unchanged (what the clip is padded with outside its edges)
+        public record Blend(string Name, string Neutral, string Expr);
+        public static readonly Blend[] Blends =
+        {
+            new("Normal", "", ""), new("Multiplicar", "white", "A*B/255"), new("Pantalla", "black", "A+B-A*B/255"),
+            new("Superponer", "gray", "if(lt(A,128),2*A*B/255,255-2*(255-A)*(255-B)/255)"), new("Oscurecer", "white", "min(A,B)"), new("Aclarar", "black", "max(A,B)"),
+            new("Luz fuerte", "gray", "if(lt(B,128),2*A*B/255,255-2*(255-A)*(255-B)/255)"),
+            new("Luz suave", "gray", "255*if(lt(B,128),2*(A/255)*(B/255)+pow(A/255,2)*(1-2*B/255),sqrt(A/255)*(2*B/255-1)+2*(A/255)*(1-B/255))"),
+            new("Quemado lineal", "white", "max(A+B-255,0)"), new("Quemado de color", "white", "if(eq(B,0),0,max(255-(255-A)*255/B,0))"), new("Sobreexponer color", "black", "if(eq(B,255),255,min(A*255/(255-B),255))"),
+        };
+        public static Blend BlendOf(string n) => Blends.FirstOrDefault(b => b.Name == n) ?? Blends[0];
+        // CapCut masks (names found in videoeditor.dll): linear, mirror, circle, rectangle, heart; each with size W/H, rotation, feather, round corner
+        public static readonly string[] Masks = { "Ninguna", "Lineal", "Espejo", "Círculo", "Rectángulo", "Corazón" };
         public static readonly string[] FilterCats = { "Todos", "Cine", "Cálidos", "Fríos", "B/N", "Retro", "Creativos" };
         public static readonly Dictionary<string, string> FilterCat = new()
         {
@@ -112,6 +126,23 @@ namespace MiniCut
         public string Filter { get; set; } = "Ninguno"; public string Effect { get; set; } = "Ninguno"; public bool Flip { get; set; }
         public double FadeIn { get; set; } public double FadeOut { get; set; }
         public string Trans { get; set; } = "Ninguna"; public double TransDur { get; set; } = 0.6;
+        public string Blend { get; set; } = "Normal";
+        public string Mask { get; set; } = "Ninguna"; public double MaskW { get; set; } = .5; public double MaskH { get; set; } = .5; public double MaskRot { get; set; } public double MaskFeather { get; set; } public double MaskRound { get; set; } public bool MaskInvert { get; set; }
+
+        // mask coverage 0..1 as an ffmpeg expression in pixels (X,Y,W,H of the clip frame); same maths as the preview shader in Grade.cs
+        public string MaskExpr()
+        {
+            var a = F(MaskRot * Math.PI / 180); string nx = "((X-W/2)/W)", ny = "((Y-H/2)/H)";
+            string qx = $"(({nx}*cos({a})+{ny}*sin({a}))/{F(MaskW / 2)})", qy = $"((-{nx}*sin({a})+{ny}*cos({a}))/{F(MaskH / 2)})", rr = F(Math.Clamp(MaskRound, 0, 1));
+            string d = Mask switch
+            {
+                "Lineal" => qy, "Espejo" => $"(abs({qy})-1)", "Círculo" => $"(hypot({qx},{qy})-1)",
+                "Rectángulo" => $"(hypot(max(abs({qx})-1+{rr},0),max(abs({qy})-1+{rr},0))+min(max(abs({qx})-1+{rr},abs({qy})-1+{rr}),0)-{rr})",
+                _ => $"((({qx}*{qx}*1.69+({qy}*-1.3+.2)*({qy}*-1.3+.2)-1)^3)-{qx}*{qx}*1.69*({qy}*-1.3+.2)^3)"
+            };
+            string fe = F(Math.Max(MaskFeather * .5, .002)), m = $"clip(({fe}-{d})/{F(2 * Math.Max(MaskFeather * .5, .002))},0,1)";
+            return MaskInvert ? $"(1-{m})" : m;
+        }
         public string Text { get; set; } = ""; public int TextSize { get; set; } = 64; public string TextColor { get; set; } = "white";
         public List<Kf> Kfs { get; set; } = new();
         public string Name => Kind == "text" ? "T " + Text : System.IO.Path.GetFileName(Path);
@@ -164,6 +195,7 @@ namespace MiniCut
     public class Project
     {
         public string Name { get; set; } public string Canvas { get; set; } = "16:9"; public List<Seg> Segs { get; set; } = new();
+        public List<int> Hidden { get; set; } = new(); public List<int> Muted { get; set; } = new(); public List<int> Locked { get; set; } = new(); // per-track eye / speaker / lock (like CapCut's track header)
         // a clip whose successor starts a transition right at its end stays on screen (last frame) while the transition runs
         public double Hold(Seg s) => s.Kind is "video" or "image" ? Segs.Where(n => n != s && n.Track == s.Track && n.Trans != "Ninguna" && n.Kind is "video" or "image" && Math.Abs(n.Start - s.End) < .06).Select(n => Math.Min(n.TransDur, n.Dur)).DefaultIfEmpty(0).Max() : 0;
     }
@@ -271,7 +303,7 @@ namespace MiniCut
             }
             string prev = "b0"; int k = 0;
             g.Append(at == null ? $"color=c=black:s={W}x{H}:r=30:d={F(total)}[b0];" : $"color=c=black:s={W}x{H}:r=30:d=1,setpts=PTS+{F(at.Value)}/TB[b0];");
-            foreach (var s in p.Segs.Where(s => s.Kind is "video" or "image" && On(s)).OrderByDescending(s => s.Track).ThenBy(s => s.Start))
+            foreach (var s in p.Segs.Where(s => s.Kind is "video" or "image" && On(s) && !p.Hidden.Contains(s.Track)).OrderByDescending(s => s.Track).ThenBy(s => s.Start))
             {
                 int i = idx[s];
                 var c = new List<string> { $"setpts=(PTS-STARTPTS)/{F(s.Speed)}", "fps=30", $"setpts=PTS+{F(at ?? s.Start)}/TB" };
@@ -282,6 +314,7 @@ namespace MiniCut
                 if (Opts.Effects.GetValueOrDefault(s.Effect, "") != "") c.Add(Opts.Effects[s.Effect]);
                 c.Add("format=rgba");
                 if (s.Opacity < 1) c.Add($"colorchannelmixer=aa={F(s.Opacity)}");
+                if (s.Mask != "Ninguna") c.Add($"format=yuva444p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='alpha(X,Y)*{s.MaskExpr()}',format=rgba");
                 var tr = Opts.TrOf(s.Trans); double td = Math.Max(.05, Math.Min(s.TransDur, s.Dur)); bool hasTr = tr.Name != "Ninguna";
                 string tp = $"clip((t-{F(s.Start)})/{F(td)},0,1)";
                 if (hasTr && tr.Fade) c.Add($"fade=t=in:st={F(s.Start)}:d={F(td)}:alpha=1");
@@ -296,10 +329,17 @@ namespace MiniCut
                 if (s.Of("rotation").Count > 0 || s.Rotation != 0) c.Add($"rotate=a='({s.Expr("rotation", s.Start)})*PI/180':ow='hypot(iw,ih)':oh='hypot(iw,ih)':c=none");
                 g.Append($"[{i}:v]{string.Join(",", c)}[v{i}];");
                 string tdx = hasTr && tr.Dx != 0 ? $"+{F(tr.Dx * W)}*(1-{tp})" : "", tdy = hasTr && tr.Dy != 0 ? $"+{F(tr.Dy * H)}*(1-{tp})" : "";
-                g.Append($"[{prev}][v{i}]overlay=x='(main_w-overlay_w)/2+{s.Expr("x", s.Start, sc)}{tdx}':y='(main_h-overlay_h)/2+{s.Expr("y", s.Start, sc)}{tdy}':eval=frame:enable='between(t,{F(s.Start)},{F(s.End + p.Hold(s))})':shortest=0[b{++k}];");
+                var bl = Opts.BlendOf(s.Blend); string ox = $"x='(main_w-overlay_w)/2+{s.Expr("x", s.Start, sc)}{tdx}':y='(main_h-overlay_h)/2+{s.Expr("y", s.Start, sc)}{tdy}':eval=frame:shortest=0";
+                string en = $"between(t,{F(s.Start)},{F(s.End + p.Hold(s))})";
+                if (bl.Name == "Normal") g.Append($"[{prev}][v{i}]overlay={ox}:enable='{en}'[b{++k}];");
+                else
+                {   // blend: put the clip on a canvas filled with the mode's neutral colour, then combine it with what is below using CapCut's formula
+                    g.Append($"color=c={bl.Neutral}:s={W}x{H}:r=30:d={F(total)}[n{i}];[n{i}][v{i}]overlay={ox}[c{i}];[{prev}]format=gbrp[pa{i}];[c{i}]format=gbrp[pb{i}];");
+                    g.Append($"[pa{i}][pb{i}]blend=all_expr='{bl.Expr}':enable='{en}'[b{++k}];");
+                }
                 prev = "b" + k;
             }
-            foreach (var s in p.Segs.Where(s => s.Kind == "text" && s.Text != "" && On(s)).OrderBy(s => s.Start))
+            foreach (var s in p.Segs.Where(s => s.Kind == "text" && s.Text != "" && On(s) && !p.Hidden.Contains(s.Track)).OrderBy(s => s.Start))
             {
                 g.Append($"[{prev}]drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='{Esc(s.Text)}':fontcolor={s.TextColor}:fontsize={F(s.TextSize * sc)}:box=1:boxcolor=black@0.5:boxborderw=10:x='(w-tw)/2+{s.Expr("x", s.Start, sc)}':y='(h-th)/2+{s.Expr("y", s.Start, sc)}':enable='between(t,{F(s.Start)},{F(s.End)})'[b{++k}];");
                 prev = "b" + k;
@@ -310,13 +350,13 @@ namespace MiniCut
                 // audio is read from the same decoded PCM the live preview mixes (exact sample positions, identical to what you heard);
                 // asking ffmpeg to -ss into some AAC files shifts the audio by ~1 frame relative to a full decode
                 var aidx = new Dictionary<Seg, int>();
-                foreach (var s in p.Segs.Where(s => (s.Kind == "video" && s.HasAudio) || s.Kind == "audio"))
+                foreach (var s in p.Segs.Where(s => ((s.Kind == "video" && s.HasAudio) || s.Kind == "audio") && !p.Muted.Contains(s.Track)))
                 {
                     if (MakeRaw(s.Path)) { aidx[s] = n++; inp.Append($"-f s16le -ar 44100 -ac 2 -ss {F(s.Src)} -t {F(s.Dur * s.Speed)} -i \"{Raw(s.Path)}\" "); }
                     else aidx[s] = idx[s];
                 }
                 var labels = new List<string>();
-                foreach (var s in p.Segs.Where(s => (s.Kind == "video" && s.HasAudio) || s.Kind == "audio"))
+                foreach (var s in p.Segs.Where(s => ((s.Kind == "video" && s.HasAudio) || s.Kind == "audio") && !p.Muted.Contains(s.Track)))
                 {
                     var a = new List<string>();
                     if (s.Speed != 1) a.Add(Atempo(s.Speed));

@@ -36,3 +36,8 @@ MiniCut.exe --frame proyecto.minicut salida.png <segundos>
 
 
 
+
+## Hallazgos de ingeniería inversa usados (v0.7)
+- **Modos de mezcla**: `Resources/MixMode/*` de CapCut contiene 10 shaders GLSL (multiply, screen, overlay, darken, lighten, hard light, soft light, linear burn, color burn, color dodge). Todos componen en alfa recto: `out = fg·fa·(1−ba) + bg·ba·(1−fa) + fa·ba·B(fg,bg)`. MiniCut usa esas fórmulas en `Blend.cs` (vista previa) y en `Opts.Blends` (ffmpeg `blend`).
+- **Máscaras**: `videoeditor.dll` expone los tipos `linear`, `circle`, `rectangle`, `heart` (+ espejo) y las propiedades `MaskSize{Width,Height}`, `MaskRotation`, `MaskFeather`, `MaskRoundCorner` (claves de keyframe `KFTypeCommonMask*`). MiniCut las replica en `Grade.cs` y `Seg.MaskExpr()`.
+- **Cabecera de pista**: ojo / altavoz / candado, como en CapCut (`Project.Hidden/Muted/Locked`).
