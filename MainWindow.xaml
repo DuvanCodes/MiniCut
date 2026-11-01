@@ -10,6 +10,19 @@
     </Style>
     <Style x:Key="Accent" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Background" Value="#25f4ee"/><Setter Property="Foreground" Value="#031211"/><Setter Property="FontWeight" Value="SemiBold"/></Style>
     <Style TargetType="TextBox"><Setter Property="Background" Value="#152024"/><Setter Property="Foreground" Value="#e9e9ee"/><Setter Property="BorderBrush" Value="#2a3b42"/><Setter Property="Padding" Value="6,4"/><Setter Property="CaretBrush" Value="White"/></Style>
+    <Style TargetType="Slider">
+      <Setter Property="Height" Value="22"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Slider">
+        <Grid VerticalAlignment="Center" Height="22" Background="Transparent">
+          <Border Height="3" CornerRadius="1.5" Background="#3a464b" VerticalAlignment="Center"/>
+          <Track x:Name="PART_Track">
+            <Track.DecreaseRepeatButton><RepeatButton Command="Slider.DecreaseLarge"><RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Grid Background="Transparent"><Border Height="3" CornerRadius="1.5" Background="#e9e9ee" VerticalAlignment="Center"/></Grid></ControlTemplate></RepeatButton.Template></RepeatButton></Track.DecreaseRepeatButton>
+            <Track.IncreaseRepeatButton><RepeatButton Command="Slider.IncreaseLarge"><RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Grid Background="Transparent"/></ControlTemplate></RepeatButton.Template></RepeatButton></Track.IncreaseRepeatButton>
+            <Track.Thumb><Thumb Width="12" Height="14"><Thumb.Template><ControlTemplate TargetType="Thumb"><Ellipse Fill="White" Width="12" Height="12"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb>
+          </Track>
+        </Grid>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
     <Style x:Key="Lbl" TargetType="TextBlock"><Setter Property="Foreground" Value="#8d8d98"/><Setter Property="FontSize" Value="11"/></Style>
   </Window.Resources>
   <Grid>
@@ -75,6 +88,7 @@
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Text="DETALLES" Style="{StaticResource Lbl}" Margin="14,12,0,6"/>
           <WrapPanel x:Name="DetailTabs" DockPanel.Dock="Top" Margin="10,0,10,8"/>
+          <Border x:Name="DetailSub" DockPanel.Dock="Top" Margin="14,0,14,6" Background="#121c20" CornerRadius="6" Padding="2" Visibility="Collapsed"><UniformGrid x:Name="SubGrid" Rows="1"/></Border>
           <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Details" Margin="14,0,14,14"/></ScrollViewer>
         </DockPanel>
       </Border>
@@ -89,7 +103,7 @@
           <Button Content="❄" Click="Freeze" ToolTip="Congelar fotograma"/><Button Content="⟳" Click="Rotate90" ToolTip="Rotar 90°"/><Button Content="⇋" Click="Mirror" ToolTip="Espejo"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-          <TextBlock Text="⊖" Foreground="#8d98a0" VerticalAlignment="Center" Margin="0,0,6,0"/>
+          <Button x:Name="SnapBtn" Content="🧲" Click="ToggleSnap" ToolTip="Imán: ajustar a los bordes de los clips" Background="#0f4448" Foreground="#25f4ee" Padding="9,4"/><Button Content="⤢" Click="FitZoom" ToolTip="Ajustar la línea de tiempo a la ventana" Padding="9,4" Margin="0,0,14,0"/><TextBlock Text="⊖" Foreground="#8d98a0" VerticalAlignment="Center" Margin="0,0,6,0"/>
           <Slider x:Name="Zoom" Width="130" Minimum="10" Maximum="150" Value="50" ValueChanged="ZoomChanged"/><TextBlock Text="⊕" Foreground="#8d98a0" VerticalAlignment="Center" Margin="6,0,0,0"/>
         </StackPanel>
       </Grid>

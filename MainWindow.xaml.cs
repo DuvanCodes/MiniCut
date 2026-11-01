@@ -18,13 +18,13 @@ using Microsoft.Win32;
 namespace MiniCut
 {
     public class Media { public string Path, Kind; public double Dur; public bool HasAudio; public string Thumb, Strip; public int StripN; public double StripStep, TileW; public byte[] Peaks; public string Raw; }
-    class RowUi { public Slider S; public TextBlock L; public Button K; public string Label, Fmt; }
+    class RowUi { public Slider S; public TextBox Box; public Button K, Prev, Next; public Func<double, string> Show; public string Label, Fmt; }
 
     public partial class MainWindow : Window
     {
         static readonly string[] TrackNames = { "Texto", "Vídeo 2", "Vídeo 1", "Audio 1", "Audio 2" };
         const double RULER = 26;
-        static readonly double[] TrackH = { 36, 64, 64, 48, 48 };
+        static readonly double[] TrackH = { 36, 72, 72, 48, 48 };
         static double TrackTop(int r) { double y = RULER; for (int i = 0; i < r; i++) y += TrackH[i]; return y; }
         static int RowAt(double y) { double t = RULER; for (int i = 0; i < TrackH.Length; i++) { t += TrackH[i]; if (y < t) return i; } return TrackH.Length - 1; }
         readonly AudioEngine audio = new();
@@ -383,18 +383,86 @@ namespace MiniCut
         }
 
         // ---------- details panel ----------
-        void Section(string key, string title, params string[] _) { var p = new StackPanel { Margin = new Thickness(0, 6, 0, 8) }; p.Children.Add(new TextBlock { Text = title.ToUpper(), Style = (Style)FindResource("Lbl"), Margin = new Thickness(0, 6, 0, 0), Foreground = Br("#25f4ee") }); secs[key] = p; Details.Children.Add(p); }
+        void Section(string key, string title, Action reset = null)
+        {
+            var p = new StackPanel { Margin = new Thickness(0, 6, 0, 8) };
+            var hd = new Grid(); hd.Children.Add(new TextBlock { Text = title, Foreground = Br("#e9e9ee"), FontWeight = FontWeights.SemiBold, FontSize = 13, Margin = new Thickness(0, 6, 0, 2) });
+            if (reset != null)
+            {
+                var rb = new Button { Content = "⟲", ToolTip = "Restablecer", HorizontalAlignment = HorizontalAlignment.Right, Padding = new Thickness(6, 0, 6, 0), Margin = new Thickness(0), Background = Br("transparent"), Foreground = Br("#aab6bb"), FontSize = 15 };
+                rb.Click += (_, _) => { if (sel == null) return; Push(); reset(); RefreshDetails(); Dirty(); }; hd.Children.Add(rb);
+            }
+            p.Children.Add(hd); secs[key] = p; Details.Children.Add(p);
+        }
+
+        // value text <-> number per property (CapCut shows 100%, 0.0dB, 1.00x, 0.0s, 0.00°)
+        static (Func<double, string>, Func<string, double?>) U(Func<double, string> a, Func<string, double?> b) => (a, b);
+        static (Func<double, string>, Func<string, double?>) Unit(string key, string fmt)
+        {
+            double? P(string t, string unit) { t = t.Trim().Replace(unit, "").Replace(',', '.').Trim(); return double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : null; }
+            string F(double v, string f, string u) => v.ToString(f, CultureInfo.InvariantCulture) + u;
+            switch (key)
+            {
+                case "scale": case "opacity": return U(v => F(v * 100, "0", "%"), t => P(t, "%") / 100);
+                case "volume": return U(v => v <= .0001 ? "-∞dB" : F(20 * Math.Log10(v), "0.0", "dB"), t => { var d = P(t, "dB"); return d == null ? null : Math.Pow(10, d.Value / 20); });
+                case "fadein": case "fadeout": return U(v => F(v, "0.0", "s"), t => P(t, "s"));
+                case "speed": return U(v => F(v, "0.00", "x"), t => P(t, "x"));
+                case "rotation": case "maskrot": return U(v => F(v, "0.00", "°"), t => P(t, "°"));
+                default: return U(v => F(v, fmt, ""), t => P(t, ""));
+            }
+        }
+
+        // slider + editable value box + spinner (+ previous / toggle / next keyframe) like CapCut's property rows
         void Row(string sec, string key, string label, double min, double max, bool kf = false, string fmt = "0.##")
         {
-            var g = new Grid(); g.ColumnDefinitions.Add(new ColumnDefinition()); g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var l = new TextBlock { Style = (Style)FindResource("Lbl"), Margin = new Thickness(0, 6, 0, 0) }; Grid.SetColumnSpan(l, 2);
-            var s = new Slider { Minimum = min, Maximum = max }; s.ValueChanged += (_, e) => SliderChanged(key, e.NewValue); Grid.SetRow(s, 1);
-            g.Children.Add(l); g.Children.Add(s);
-            Button kb = null;
-            if (kf) { kb = new Button { Content = "◇", Padding = new Thickness(6, 0, 6, 0), Margin = new Thickness(6, 0, 0, 0), Background = Br("transparent"), Foreground = Br("#25f4ee"), ToolTip = "Keyframe en el cursor" }; kb.Click += (_, _) => ToggleKf(key); Grid.SetRow(kb, 1); Grid.SetColumn(kb, 1); g.Children.Add(kb); }
-            ((Panel)secs[sec]).Children.Add(g); rows[key] = new RowUi { S = s, L = l, K = kb, Label = label, Fmt = fmt };
+            var g = new Grid { Margin = new Thickness(0, 2, 0, 4) }; g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            g.Children.Add(new TextBlock { Text = label, Foreground = Br("#d5dde0"), FontSize = 12, Margin = new Thickness(0, 4, 0, 2) });
+            var c = new Grid { VerticalAlignment = VerticalAlignment.Center }; Grid.SetRow(c, 1);
+            c.ColumnDefinitions.Add(new ColumnDefinition()); c.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(74) }); c.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); c.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var s = new Slider { Minimum = min, Maximum = max, VerticalAlignment = VerticalAlignment.Center }; s.ValueChanged += (_, e) => SliderChanged(key, e.NewValue);
+            var (show, parse) = Unit(key, fmt);
+            var box = new TextBox { Height = 26, TextAlignment = TextAlignment.Right, VerticalContentAlignment = VerticalAlignment.Center, Background = Br("#1a2428"), BorderThickness = new Thickness(0), Margin = new Thickness(10, 0, 0, 0) }; Grid.SetColumn(box, 1);
+            void Commit() { var v = parse(box.Text); if (v != null) s.Value = Math.Clamp(v.Value, min, max); box.Text = show(s.Value); }
+            box.KeyDown += (_, e) => { if (e.Key == Key.Enter) { Commit(); Keyboard.ClearFocus(); e.Handled = true; } };
+            box.LostFocus += (_, _) => Commit();
+            double stp = key switch { "scale" or "opacity" => .01, "speed" => .05, "fadein" or "fadeout" => .1, "x" or "y" or "rotation" or "maskrot" => 1, _ => (max - min) / 100 };
+            Button Step(string t, int dir)
+            {
+                var b = new Button { Content = t, FontSize = 7, Padding = new Thickness(3, 0, 3, 0), Margin = new Thickness(0), Height = 13, Background = Br("#1a2428"), Foreground = Br("#aab6bb") };
+                b.Click += (_, _) => s.Value = Math.Clamp(key == "volume" ? Math.Max(s.Value, .01) * Math.Pow(10, dir * 0.1 / 20) : s.Value + dir * stp, min, max); return b;
+            }
+            var sp = new StackPanel { Margin = new Thickness(3, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }; sp.Children.Add(Step("▲", 1)); sp.Children.Add(Step("▼", -1)); Grid.SetColumn(sp, 2);
+            c.Children.Add(s); c.Children.Add(box); c.Children.Add(sp);
+            Button kb = null, pb = null, nb = null;
+            if (kf)
+            {
+                Button Mk(string t, string tip, Brush fg) => new Button { Content = t, ToolTip = tip, Padding = new Thickness(5, 0, 5, 0), Margin = new Thickness(0), Background = Br("transparent"), Foreground = fg, FontSize = 14 };
+                pb = Mk("‹", "Keyframe anterior", Br("#aab6bb")); kb = Mk("◇", "Añadir / quitar keyframe en el cursor", Br("#25f4ee")); nb = Mk("›", "Keyframe siguiente", Br("#aab6bb"));
+                pb.Click += (_, _) => GoKf(key, -1); kb.Click += (_, _) => ToggleKf(key); nb.Click += (_, _) => GoKf(key, 1);
+                var kp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }; kp.Children.Add(pb); kp.Children.Add(kb); kp.Children.Add(nb); Grid.SetColumn(kp, 3); c.Children.Add(kp);
+            }
+            g.Children.Add(c); ((Panel)secs[sec]).Children.Add(g); rows[key] = new RowUi { S = s, Box = box, K = kb, Prev = pb, Next = nb, Show = show, Label = label, Fmt = fmt };
         }
+        void ShowRow(string key, double v)
+        {
+            var r = rows[key]; if (!r.Box.IsKeyboardFocused) r.Box.Text = r.Show(v);
+            if (r.K != null) { var t = sel.Of(key); r.K.Content = sel.HasKf(key, Rel) ? "◆" : "◇"; r.Prev.Opacity = t.Any(k => k.T < Rel - .02) ? 1 : .35; r.Next.Opacity = t.Any(k => k.T > Rel + .02) ? 1 : .35; }
+        }
+        void GoKf(string key, int dir)
+        {
+            if (sel == null) return; var t = sel.Of(key).Select(k => k.T);
+            var to = dir < 0 ? t.Where(x => x < Rel - .02).DefaultIfEmpty(-1).Max() : t.Where(x => x > Rel + .02).DefaultIfEmpty(-1).Min();
+            if (to >= 0) Seek(sel.Start + to);
+        }
+        // aligns the clip frame to a canvas edge / centre (h, v: -1 start, 0 centre, 1 end)
+        void Align(int h, int v)
+        {
+            if (sel == null) return; Push(); var (W, H) = Opts.Size(proj.Canvas); double sc = sel.Get("scale", Rel);
+            if (h != int.MinValue) sel.Set("x", h * W * (1 - sc) / 2, Rel); if (v != int.MinValue) sel.Set("y", v * H * (1 - sc) / 2, Rel);
+            RefreshDetails(); Dirty();
+        }
+        Action R(Action<Seg> a) => () => a(sel);
+        TextBlock speedInfo; string detailSub = "Básico";
 
         WrapPanel blendPanel, maskPanel, fontPanel; TextBlock blendHint;
         void FillFonts()
@@ -426,11 +494,14 @@ namespace MiniCut
             Row("text", "textsize", "Tamaño", 16, 200, false, "0");
             ((Panel)secs["text"]).Children.Add(new TextBlock { Text = "FUENTE", Style = (Style)FindResource("Lbl"), Margin = new Thickness(0, 10, 0, 0) });
             fontPanel = new WrapPanel(); ((Panel)secs["text"]).Children.Add(fontPanel); FillFonts();
-            Section("xform", "Posición"); Row("xform", "x", "Posición X", -1000, 1000, true, "0"); Row("xform", "y", "Posición Y", -1000, 1000, true, "0");
-            Section("xform2", "Transformar"); Row("xform2", "scale", "Escala", 0.1, 4, true); Row("xform2", "rotation", "Rotación °", -180, 180, true, "0"); Row("xform2", "opacity", "Opacidad", 0, 1, false);
+            Section("xform", "Posición", R(sg => { sg.X = 0; sg.Y = 0; sg.Kfs.RemoveAll(k => k.Prop is "x" or "y"); })); Row("xform", "x", "Posición X", -1000, 1000, true, "0"); Row("xform", "y", "Posición Y", -1000, 1000, true, "0");
+            Section("xform2", "Transformar", R(sg => { sg.Scale = 1; sg.Rotation = 0; sg.Opacity = 1; sg.Flip = false; sg.Kfs.RemoveAll(k => k.Prop is "scale" or "rotation"); })); Row("xform2", "scale", "Escala", 0.1, 4, true); Row("xform2", "rotation", "Rotar", -180, 180, true, "0"); Row("xform2", "opacity", "Opacidad", 0, 1, false);
+            var al = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+            foreach (var (gl, tip, ah, av) in new[] { ("⇤", "Alinear a la izquierda", -1, int.MinValue), ("↔", "Centrar horizontalmente", 0, int.MinValue), ("⇥", "Alinear a la derecha", 1, int.MinValue), ("⤒", "Alinear arriba", int.MinValue, -1), ("↕", "Centrar verticalmente", int.MinValue, 0), ("⤓", "Alinear abajo", int.MinValue, 1) })
+            { var h1 = ah; var v1 = av; var ab = new Button { Content = gl, ToolTip = tip, Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 4, 0), FontSize = 14, FontFamily = new FontFamily("Segoe UI Symbol") }; ab.Click += (_, _) => Align(h1, v1); al.Children.Add(ab); }
             var fl = new CheckBox { Content = "Espejo horizontal", Foreground = Br("#e9e9ee"), Margin = new Thickness(0, 8, 0, 0) };
             fl.Click += (_, _) => { if (sel == null) return; Push(); sel.Flip = fl.IsChecked == true; Dirty(); }; ((Panel)secs["xform2"]).Children.Add(fl); secs["xform2"].Tag = fl;
-            Section("adjust", "Ajuste"); Row("adjust", "brightness", "Brillo", -.5, .5, false); Row("adjust", "contrast", "Contraste", 0, 2, false); Row("adjust", "saturation", "Saturación", 0, 3, false);
+            Section("adjust", "Ajuste", R(sg => { sg.Brightness = 0; sg.Contrast = 1; sg.Saturation = 1; })); Row("adjust", "brightness", "Brillo", -.5, .5, false); Row("adjust", "contrast", "Contraste", 0, 2, false); Row("adjust", "saturation", "Saturación", 0, 3, false);
             var info = new TextBlock { Style = (Style)FindResource("Lbl"), Margin = new Thickness(0, 8, 0, 0), Name = "FxInfo" }; ((Panel)secs["adjust"]).Children.Add(info); secs["adjust"].Tag = info;
             Section("blend", "Mezcla"); blendPanel = new WrapPanel(); ((Panel)secs["blend"]).Children.Add(blendPanel);
             foreach (var b in Opts.Blends) { var bn = b.Name; var bt = new Button { Content = bn, Tag = bn, Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(0, 4, 4, 0), FontSize = 11.5 }; bt.Click += (_, _) => { if (sel?.Track == 2) { Busy.Text = "La mezcla funciona en clips de Vídeo 2 (sobre Vídeo 1)"; return; } Edit(sg => sg.Blend = bn, true); }; blendPanel.Children.Add(bt); }
@@ -441,9 +512,11 @@ namespace MiniCut
             Row("mask", "maskw", "Ancho", 0.05, 2); Row("mask", "maskh", "Alto", 0.05, 2); Row("mask", "maskrot", "Rotación °", -180, 180, false, "0"); Row("mask", "maskfeather", "Difuminado", 0, 1); Row("mask", "maskround", "Esquinas redondeadas", 0, 1);
             var inv = new CheckBox { Content = "Invertir máscara", Foreground = Br("#e9e9ee"), Margin = new Thickness(0, 8, 0, 0) };
             inv.Click += (_, _) => { if (sel == null) return; Push(); sel.MaskInvert = inv.IsChecked == true; Dirty(); }; ((Panel)secs["mask"]).Children.Add(inv); secs["mask"].Tag = inv;
-            Section("speed", "Velocidad"); Row("speed", "speed", "Velocidad ×", 0.25, 4);
-            Section("vol", "Volumen"); Row("vol", "volume", "Volumen", 0, 2, true);
-            Section("fade", "Fundidos"); Row("fade", "fadein", "Entrada (s)", 0, 5, false, "0.0"); Row("fade", "fadeout", "Salida (s)", 0, 5, false, "0.0");
+            Section("speed", "Velocidad"); Row("speed", "speed", "Velocidad", 0.25, 4);
+            speedInfo = new TextBlock { Foreground = Br("#d5dde0"), FontSize = 12, Margin = new Thickness(0, 10, 0, 0) }; ((Panel)secs["speed"]).Children.Add(speedInfo);
+            var rs = new Button { Content = "Restablecer", HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) }; rs.Click += (_, _) => { if (sel != null) rows["speed"].S.Value = 1; }; ((Panel)secs["speed"]).Children.Add(rs);
+            Section("vol", "Básico", R(sg => { sg.Volume = 1; sg.Kfs.RemoveAll(k => k.Prop == "volume"); })); Row("vol", "volume", "Volumen", 0, 2, true);
+            Section("fade", "Fundidos", R(sg => { sg.FadeIn = 0; sg.FadeOut = 0; })); Row("fade", "fadein", "Fundido de entrada", 0, 5, false, "0.0"); Row("fade", "fadeout", "Fundido de salida", 0, 5, false, "0.0");
         }
 
         double ReadStatic(string k) => k switch
@@ -453,8 +526,8 @@ namespace MiniCut
         };
 
         // like CapCut's property tabs: only the pages that make sense for the selected clip type
-        static readonly Dictionary<string, string[]> TabSections = new() { ["Video"] = new[] { "xform", "xform2", "blend" }, ["Máscara"] = new[] { "mask" }, ["Ajuste"] = new[] { "adjust" }, ["Audio"] = new[] { "vol" }, ["Velocidad"] = new[] { "speed" }, ["Animación"] = new[] { "fade" }, ["Texto"] = new[] { "text", "xform" } };
-        static string[] TabsFor(string kind) => kind switch { "video" => new[] { "Video", "Ajuste", "Máscara", "Audio", "Velocidad", "Animación" }, "image" => new[] { "Video", "Ajuste", "Máscara", "Animación" }, "audio" => new[] { "Audio", "Velocidad", "Animación" }, "text" => new[] { "Texto" }, _ => Array.Empty<string>() };
+        static readonly Dictionary<string, string[]> TabSections = new() { ["Video"] = new[] { "xform", "xform2", "blend" }, ["Ajuste"] = new[] { "adjust" }, ["Audio"] = new[] { "vol", "fade" }, ["Velocidad"] = new[] { "speed" }, ["Animación"] = new[] { "fade" }, ["Texto"] = new[] { "text", "xform" } };
+        static string[] TabsFor(string kind) => kind switch { "video" => new[] { "Video", "Audio", "Velocidad", "Animación", "Ajuste" }, "image" => new[] { "Video", "Animación", "Ajuste" }, "audio" => new[] { "Audio", "Velocidad", "Animación" }, "text" => new[] { "Texto" }, _ => Array.Empty<string>() };
         string detailTab = "Video", detailKind;
 
         void BuildDetailTabs(string kind)
@@ -474,13 +547,21 @@ namespace MiniCut
             updating = true;
             bool has = sel != null; var k = sel?.Kind;
             if (k != detailKind) BuildDetailTabs(k);
-            var active = TabSections.TryGetValue(detailTab, out var sl) && has ? sl : Array.Empty<string>();
+            bool sub = has && detailTab == "Video" && k is "video" or "image"; DetailSub.Visibility = sub ? Visibility.Visible : Visibility.Collapsed;
+            if (sub)
+            {
+                SubGrid.Children.Clear();
+                foreach (var n in new[] { "Básico", "Máscara" })
+                { var nn = n; bool on = n == detailSub; var sb = new Button { Content = n, Margin = new Thickness(0), Padding = new Thickness(6, 5, 6, 5), Background = Br(on ? "#2c383d" : "transparent"), Foreground = Br(on ? "#ffffff" : "#aab6bb") }; sb.Click += (_, _) => { detailSub = nn; RefreshDetails(); }; SubGrid.Children.Add(sb); }
+            }
+            var active = sub && detailSub == "Máscara" ? new[] { "mask" } : TabSections.TryGetValue(detailTab, out var sl) && has ? sl : Array.Empty<string>();
             void Vis(string key, bool v) => secs[key].Visibility = v && active.Contains(key) ? Visibility.Visible : Visibility.Collapsed;
             Vis("text", k == "text"); Vis("xform", k is "video" or "image" or "text"); Vis("xform2", k is "video" or "image"); Vis("adjust", k is "video" or "image");
             Vis("blend", k is "video" or "image"); Vis("mask", k is "video" or "image"); Vis("speed", k is "video" or "audio"); Vis("vol", k is "video" or "audio"); Vis("fade", k is "video" or "image" or "audio");
             if (has)
             {
-                foreach (var (key, r) in rows) { var v = ReadStatic(key); r.S.Value = v; r.L.Text = $"{r.Label}   {v.ToString(r.Fmt, CultureInfo.InvariantCulture)}"; if (r.K != null) { var at = sel.HasKf(key, Rel); r.K.Content = at ? "◆" : "◇"; } }
+                foreach (var (key, r) in rows) { var v = ReadStatic(key); r.S.Value = v; ShowRow(key, v); }
+                speedInfo.Text = $"Duración    {sel.Dur * sel.Speed:0.0}s   →   {sel.Dur:0.0}s";
                 tbText.Text = sel.Text; ((CheckBox)secs["xform2"].Tag).IsChecked = sel.Flip; ((CheckBox)secs["mask"].Tag).IsChecked = sel.MaskInvert;
                 foreach (Button b in blendPanel.Children) { bool on = (string)b.Tag == sel.Blend; b.Background = Br(on ? "#1c3a40" : "#1c282d"); b.Foreground = Br(on ? "#25f4ee" : "#cfd8db"); }
                 foreach (Button b in maskPanel.Children) { bool on = (string)b.Tag == sel.Mask; b.Background = Br(on ? "#1c3a40" : "#1c282d"); b.Foreground = Br(on ? "#25f4ee" : "#cfd8db"); }
@@ -507,7 +588,7 @@ namespace MiniCut
                 case "speed": { var used = sel.Dur * sel.Speed; sel.Speed = v; sel.Dur = used / v; break; }
                 default: sel.Set(key, v, Rel); break;
             }
-            var r = rows[key]; r.L.Text = $"{r.Label}   {v.ToString(r.Fmt, CultureInfo.InvariantCulture)}"; if (r.K != null) r.K.Content = sel.HasKf(key, Rel) ? "◆" : "◇";
+            ShowRow(key, v); if (key == "speed") speedInfo.Text = $"Duración    {sel.Dur * sel.Speed:0.0}s   →   {sel.Dur:0.0}s";
             // only what really changes on screen: speed moves the clip end, volume reshapes the waveform; everything else is just a re-sync
             if (key == "speed") Dirty();
             else { RebuildAudio(); Sync(!playing); if (key == "volume") RedrawBlock(sel); }
@@ -582,7 +663,7 @@ namespace MiniCut
             g.Children.Add(new Border { CornerRadius = new CornerRadius(5), Background = Br(KindColor(sg.Kind)) });
             var m = media.FirstOrDefault(x => x.Path == sg.Path);
             var inner = new Canvas { Width = w, Height = h, ClipToBounds = true, IsHitTestVisible = false }; g.Children.Add(inner);
-            double thumbH = sg.Kind is "video" or "image" ? 34 : 0;
+            double headH = sg.Kind == "text" ? 0 : 15, thumbH = sg.Kind is "video" or "image" ? 30 : 0;
             if (thumbH > 0 && m != null)
             {
                 if (sg.Kind == "video" && m.Strip != null)
@@ -593,16 +674,16 @@ namespace MiniCut
                         int idx = Math.Clamp((int)((sg.Src + (x + cellW / 2) / Px * sg.Speed) / m.StripStep), 0, m.StripN - 1);
                         if (!cellBrushes.TryGetValue((m.Strip, idx), out var br)) { br = new ImageBrush(sprite) { Viewbox = new Rect(idx / (double)m.StripN, 0, 1.0 / m.StripN, 1), Stretch = Stretch.Fill }; br.Freeze(); cellBrushes[(m.Strip, idx)] = br; }
                         var r = new Rectangle { Width = cellW, Height = thumbH, Fill = br };
-                        Canvas.SetLeft(r, x); inner.Children.Add(r);
+                        Canvas.SetLeft(r, x); Canvas.SetTop(r, headH); inner.Children.Add(r);
                     }
                 }
                 else if (m.Thumb != null)
                 {
                     var im = Thumb(m.Thumb); var bw = ((BitmapSource)im).PixelWidth * thumbH / 90.0;
-                    inner.Children.Add(new Rectangle { Width = w, Height = thumbH, Fill = new ImageBrush(im) { TileMode = TileMode.Tile, Stretch = Stretch.Fill, Viewport = new Rect(0, 0, bw, thumbH), ViewportUnits = BrushMappingMode.Absolute } });
+                    var tile = new Rectangle { Width = w, Height = thumbH, Fill = new ImageBrush(im) { TileMode = TileMode.Tile, Stretch = Stretch.Fill, Viewport = new Rect(0, 0, bw, thumbH), ViewportUnits = BrushMappingMode.Absolute } }; Canvas.SetTop(tile, headH); inner.Children.Add(tile);
                 }
             }
-            bool wave = (sg.Kind == "audio" || sg.HasAudio) && m?.Peaks != null; double wy = thumbH, wh = h - thumbH;
+            bool wave = (sg.Kind == "audio" || sg.HasAudio) && m?.Peaks != null; double wy = headH + thumbH, wh = h - wy;
             if (wave)
             {
                 var geo = new StreamGeometry();
@@ -615,10 +696,15 @@ namespace MiniCut
                     }
                 geo.Freeze(); inner.Children.Add(new System.Windows.Shapes.Path { Data = geo, Stroke = Br("#bfe6ff"), StrokeThickness = 1.4, Opacity = .85 });
             }
-            inner.Children.Add(new TextBlock { Text = (sg.Kind == "audio" ? "♪ " : "") + sg.Name, Foreground = Brushes.White, FontSize = 10, Margin = new Thickness(6, 2, 6, 0), Background = Br("#88000000"), Padding = new Thickness(3, 0, 3, 0) });
+            if (headH == 0) inner.Children.Add(new TextBlock { Text = sg.Name, Foreground = Brushes.White, FontSize = 10, Margin = new Thickness(6, 2, 6, 0), Background = Br("#88000000"), Padding = new Thickness(3, 0, 3, 0) });
+            else
+            {
+                inner.Children.Add(new Border { Width = w, Height = headH, Background = Br(sg.Kind == "audio" ? "#1d6b48" : sg.Kind == "image" ? "#3a4a8a" : "#0f5560") });
+                inner.Children.Add(new TextBlock { Text = (sg.Kind == "audio" ? "♪ " : "") + sg.Name + "   " + T(sg.Dur), Foreground = Brushes.White, FontSize = 10, Margin = new Thickness(5, 1, 5, 0), Width = Math.Max(0, w - 10), TextTrimming = TextTrimming.CharacterEllipsis });
+            }
             foreach (var kf in sg.Kfs.Select(k => k.T).Distinct()) { var d = new TextBlock { Text = "◆", Foreground = Br("#25f4ee"), FontSize = 9 }; Canvas.SetLeft(d, kf * Px - 4); Canvas.SetTop(d, h - 14); inner.Children.Add(d); }
             if (sg.Trans != "Ninguna") { var tb = new TextBlock { Text = "⋈ " + sg.Trans, Foreground = Br("#25f4ee"), FontSize = 9.5, Background = Br("#aa000000"), Padding = new Thickness(3, 0, 3, 0) }; Canvas.SetLeft(tb, 2); Canvas.SetTop(tb, h - 28); inner.Children.Add(tb); }
-            g.Children.Add(new Border { CornerRadius = new CornerRadius(5), BorderBrush = Br(sg == sel ? "#25f4ee" : "transparent"), BorderThickness = new Thickness(sg == sel ? 2 : 0), IsHitTestVisible = false });
+            g.Children.Add(new Border { CornerRadius = new CornerRadius(5), BorderBrush = Br(sg == sel ? "#ffffff" : "transparent"), BorderThickness = new Thickness(sg == sel ? 2 : 0), IsHitTestVisible = false });
             Canvas.SetLeft(g, sg.Start * Px); Canvas.SetTop(g, TrackTop(sg.Track) + 2);
 
             // volume line: only on the selected clip, drag up/down to change gain (0..2 = -inf..+6 dB)
@@ -662,7 +748,7 @@ namespace MiniCut
                 else
                 {
                     var ns = Math.Max(0, oS + (p.X - sx) / Px);
-                    foreach (var edge in proj.Segs.Where(o => o != sg).SelectMany(o => new[] { o.Start, o.End }).Append(P))
+                    foreach (var edge in proj.Segs.Where(o => o != sg).SelectMany(o => new[] { o.Start, o.End }).Append(P).Where(_ => snap))
                     { if (Math.Abs(ns - edge) * Px < 8) ns = edge; else if (Math.Abs(ns + sg.Dur - edge) * Px < 8) ns = edge - sg.Dur; }
                     sg.Start = Math.Max(0, ns);
                     int row = RowAt(p.Y);
@@ -686,6 +772,9 @@ namespace MiniCut
         }
         void TlMove(object s, MouseEventArgs e) { if (scrubbing) Seek(e.GetPosition(TL).X / Px); }
         void TlUp(object s, MouseButtonEventArgs e) { scrubbing = false; TL.ReleaseMouseCapture(); Redraw(); }
+        bool snap = true;
+        void ToggleSnap(object s, RoutedEventArgs e) { snap = !snap; SnapBtn.Background = Br(snap ? "#0f4448" : "#1c282d"); SnapBtn.Foreground = Br(snap ? "#25f4ee" : "#8d98a0"); }
+        void FitZoom(object s, RoutedEventArgs e) { if (Total > 0) Zoom.Value = Math.Clamp((TlScroll.ViewportWidth - 40) / Total, Zoom.Minimum, Zoom.Maximum); }
         void ZoomChanged(object s, RoutedPropertyChangedEventArgs<double> e) { Px = Zoom.Value; if (TL != null) Redraw(); }
 
         // ---------- live preview: original files decoded in real time and composited on a Canvas, no pre-render ----------
