@@ -907,22 +907,22 @@ namespace MiniCut
         void Dirty() { Redraw(); RebuildAudio(); Sync(!playing); Touch(); }
 
         // clips whose audio is decoded and at normal speed go through the mixer (gain up to +6 dB); the rest fall back to MediaElement.Volume
-        readonly HashSet<string> procReady = new(); readonly HashSet<(string raw, string chain)> procQueue = new(); DispatcherTimer procTimer;
+        readonly HashSet<string> procReady = new(); readonly HashSet<(string raw, string chain, int rs, int len)> procQueue = new(); DispatcherTimer procTimer;
         static bool NeedsProc(Seg s) => s.Speed != 1 || s.Pitch != 0 || s.Voice != "Original";
         // PCM the live mixer should play for this clip: the original, or a processed copy (pitch / voice / speed) made in the background; null while it is still being made
         string MixRaw(Seg s, out double src)
         {
             src = s.Src; var m = media.FirstOrDefault(x => x.Path == s.Path); if (m?.Raw == null) return null;
             if (!NeedsProc(s)) return m.Raw;
-            var chain = Ff.AudioChain(s); var pr = Ff.ProcPath(m.Raw, chain);
-            if (procReady.Contains(pr) || (File.Exists(pr) && procReady.Add(pr))) { src = s.Src / s.Speed; return pr; }
-            if (procQueue.Add((m.Raw, chain))) { if (procTimer == null) { procTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) }; procTimer.Tick += (_, _) => RunProc(); } procTimer.Stop(); procTimer.Start(); }
+            var chain = Ff.AudioChain(s); int rs = (int)Math.Max(0, Math.Floor(s.Src)), len = (int)Math.Ceiling(s.Dur * s.Speed) + 2; var pr = Ff.ProcPath(m.Raw, chain, rs, len);
+            if (procReady.Contains(pr) || (File.Exists(pr) && procReady.Add(pr))) { src = (s.Src - rs) / s.Speed; return pr; } // the copy starts at second rs of the source
+            if (procQueue.Add((m.Raw, chain, rs, len))) { if (procTimer == null) { procTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) }; procTimer.Tick += (_, _) => RunProc(); } procTimer.Stop(); procTimer.Start(); }
             return null;
         }
         async void RunProc()
         {
             procTimer.Stop(); var todo = procQueue.ToList(); procQueue.Clear(); if (todo.Count == 0) return;
-            Busy.Text = "Procesando audio…"; await Task.WhenAll(todo.Select(t => Task.Run(() => Ff.MakeProc(t.raw, t.chain)))); if (procQueue.Count == 0) Busy.Text = "";
+            Busy.Text = "Procesando audio…"; await Task.WhenAll(todo.Select(t => Task.Run(() => Ff.MakeProc(t.raw, t.chain, t.rs, t.len)))); if (procQueue.Count == 0) Busy.Text = "";
             RebuildAudio(); Sync(!playing);
         }
         void RebuildAudio()

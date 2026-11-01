@@ -321,11 +321,12 @@ namespace MiniCut
             return string.Join(",", l);
         }
         // processed copy of a clip's decoded PCM (pitch / voice / speed baked in) that the live mixer plays instead of the original
-        public static string ProcPath(string raw, string chain) => System.IO.Path.Combine(Cache, "pr_" + Key(raw + "|" + chain) + ".raw");
-        public static bool MakeProc(string raw, string chain)
+        public static string ProcPath(string raw, string chain, int rs, int len) => System.IO.Path.Combine(Cache, "pr_" + Key(raw + "|" + chain + "|" + rs + "|" + len) + ".raw");
+        // only the seconds [rs, rs+len) of the source are processed, so a clip cut into pieces does not re-process the whole file for each piece
+        public static bool MakeProc(string raw, string chain, int rs, int len)
         {
-            var o = ProcPath(raw, chain); if (File.Exists(o)) return true; var tmp = o + ".part";
-            Exec("ffmpeg", $"-y -v error -nostdin -f s16le -ar 44100 -ac 2 -i \"{raw}\" -af \"{chain}\" -f s16le -ar 44100 -ac 2 \"{tmp}\"");
+            var o = ProcPath(raw, chain, rs, len); if (File.Exists(o)) return true; var tmp = o + ".part";
+            Exec("ffmpeg", $"-y -v error -nostdin -f s16le -ar 44100 -ac 2 -ss {rs} -t {len} -i \"{raw}\" " + (chain != "" ? $"-af \"{chain}\" " : "") + $"-f s16le -ar 44100 -ac 2 \"{tmp}\"");
             if (File.Exists(tmp)) File.Move(tmp, o, true); return File.Exists(o);
         }
 
