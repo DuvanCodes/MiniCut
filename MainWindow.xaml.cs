@@ -233,6 +233,9 @@ namespace MiniCut
                     LeftBody.Children.Add(Card("Título", "grande amarillo", null, "#3a3320", () => AddText("Título", 110, "yellow")));
                     LeftBody.Children.Add(Card("Subtítulo", "pequeño", null, "#3a3320", () => AddText("Subtítulo", 40, "white")));
                     LeftBody.Children.Add(Card("Rojo", "énfasis", null, "#3a2020", () => AddText("¡Atención!", 80, "red")));
+                    LeftBody.Children.Add(Card("＋ Importar SRT", "subtítulos", null, "#1c282d", ImportSubs));
+                    LeftBody.Children.Add(Card("＋ Pegar guion", "una línea = un subtítulo", null, "#1c282d", ScriptSubs));
+                    LeftBody.Children.Add(Card("Exportar SRT", "clips de texto", null, "#1c282d", ExportSubs));
                     break;
                 case 3:
                     foreach (var st in "♥☺☻☼♪♫♠♣♦►◄▲▼■●←↑→↓") { var ch = st.ToString(); LeftBody.Children.Add(Card(ch, "sticker", null, "#2a2a30", () => AddText(ch, 160, "white"))); }
@@ -670,7 +673,13 @@ namespace MiniCut
             proj.Segs.Insert(proj.Segs.IndexOf(sg) + 1, b); Select(sg); Dirty();
         }
 
-        void Rotate90(object s, RoutedEventArgs e) => Edit(sg => { var v = sg.Get("rotation", Rel) + 90; sg.Set("rotation", v > 180 ? v - 360 : v, Rel); }, true);
+        void Rotate90(object s, RoutedEventArgs e) => Edit(sg =>
+        {
+            var v = sg.Get("rotation", Rel) + 90; if (v > 180) v -= 360; sg.Set("rotation", v, Rel);
+            // a quarter turn swaps width/height: scale to cover the canvas so no black bars (only if the scale was untouched); back to 1 on 0°/180°
+            var (cw, ch) = Opts.Size(proj.Canvas); double cover = Math.Max((double)cw / ch, (double)ch / cw);
+            if (!sg.Kfs.Any(k => k.Prop == "scale") && (sg.Scale == 1 || Math.Abs(sg.Scale - cover) < 1e-6)) sg.Scale = Math.Abs(v) == 90 ? cover : 1;
+        }, true);
         void Mirror(object s, RoutedEventArgs e) => Edit(sg => sg.Flip = !sg.Flip, true);
 
         // splits the video at the cursor and inserts a 3 s still of that frame between the halves (later clips on the track shift right)
