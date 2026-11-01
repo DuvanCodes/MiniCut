@@ -44,7 +44,7 @@ namespace MiniCut
         void SaveNow()
         {
             if (curFile == null || !unsaved) return;
-            try { File.WriteAllText(curFile, JsonSerializer.Serialize(proj)); unsaved = false; } catch { }
+            try { File.WriteAllText(curFile, JsonSerializer.Serialize(proj)); unsaved = false; SaveLbl.Text = "✓ Guardado automático: " + DateTime.Now.ToString("HH:mm:ss"); } catch { }
         }
 
         // ---------- navigation ----------

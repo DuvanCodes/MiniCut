@@ -32,8 +32,13 @@ namespace MiniCut
         readonly Dictionary<(string, int), ImageBrush> cellBrushes = new();
         Media dragging; Rectangle ghost; bool monitorPlaying;
         static readonly string Tmp = Ff.Cache;
-        static readonly string[] Tabs_ = { "Medios", "Audio", "Texto", "Stickers", "Filtros", "Efectos", "Fundidos", "Ajuste" };
-        static readonly string[] TabIcons = { "▣", "♪", "T", "☺", "◐", "✦", "⇄", "☼" };
+        static readonly string[] Tabs_ = { "Medios", "Audio", "Texto", "Stickers", "Efectos", "Transic.", "Subtít.", "Filtros", "Ajuste" };
+        static readonly string[] TabIcons = { "▣", "♪", "T", "☺", "✦", "⋈", "▤", "◐", "☼" };
+        // sidebar categories per tab (like CapCut's Import / Media / Yours… list)
+        static readonly string[][] Cats = {
+            new[] { "Todos", "Vídeos", "Imágenes" }, new[] { "Sonidos", "Música", "Mis audios" }, new[] { "Básico", "Colores", "Títulos" },
+            new[] { "Formas", "Símbolos", "Flechas" }, Opts.EffectCats, new[] { "Básicas", "Deslizar", "Zoom", "Fundidos" },
+            new[] { "Subtítulos" }, Opts.FilterCats, new[] { "Preajustes" } };
 
         Project proj = new();
         readonly List<Media> media = new();
@@ -41,13 +46,15 @@ namespace MiniCut
         readonly Dictionary<string, RowUi> rows = new();
         readonly Dictionary<string, FrameworkElement> secs = new();
         readonly DispatcherTimer playTimer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
-        Seg sel; double P, Px = 50; int tab; bool updating, playing; string lastKey, projFile;
+        Seg sel; double P, Px = 50; int tab, cat; bool updating, playing; string lastKey, projFile;
         DateTime lastT; Rectangle head; TextBox tbText;
 
         static void Log(string m) { try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "minicut.log"), DateTime.Now.ToString("HH:mm:ss.fff ") + m + "\n"); } catch { } }
         double Total => proj.Segs.Count == 0 ? 0 : proj.Segs.Max(s => s.End);
         double Rel => sel == null ? 0 : Math.Clamp(P - sel.Start, 0, sel.Dur);
         static string T(double s) => TimeSpan.FromSeconds(Math.Max(0, s)).ToString(@"m\:ss\.f");
+        static string Tcf(double t) { t = Math.Max(0, t); return $"{(int)(t / 3600):00}:{(int)(t % 3600 / 60):00}:{(int)(t % 60):00}:{(int)(t % 1 * 30):00}"; }
+        string Tc() => Tcf(P) + " / " + Tcf(Total);
 
         public MainWindow()
         {
@@ -211,44 +218,100 @@ namespace MiniCut
         }
 
         // ---------- left panel ----------
-        void ShowTab(int i)
+        static string SfxDir => Path.Combine(Ff.Cache, "sfx");
+        bool IsLib(Media m) => m.Path.StartsWith(SfxDir, StringComparison.OrdinalIgnoreCase);
+        bool sfxBusy;
+        string PreviewThumb() => (sel != null ? media.FirstOrDefault(m => m.Path == sel.Path)?.Thumb : null) ?? media.FirstOrDefault(m => m.Kind != "audio" && m.Thumb != null)?.Thumb;
+        static System.Windows.Media.Effects.Effect Prev(int look, int fx) { if (!Grade.Ok) return null; var g = new Grade(); g.Set(0, 1, 1, look, fx, 142, 80, 2.3); return g; }
+
+        // built-in sounds are synthesized once with ffmpeg (original, license-free) and added to the media pool
+        async void EnsureSfx()
         {
-            tab = i; Tabs.Children.Clear(); LeftBody.Children.Clear();
+            if (sfxBusy) return; sfxBusy = true;
+            var files = await Task.Run(() =>
+            {
+                Directory.CreateDirectory(SfxDir); var l = new List<string>();
+                foreach (var d in Opts.Sounds)
+                {
+                    var f = Path.Combine(SfxDir, d.Name + ".wav");
+                    if (!File.Exists(f)) Ff.Exec("ffmpeg", $"-y -v error -nostdin -f lavfi -i \"{d.Src}\" " + (d.Af != "" ? $"-af \"{d.Af}\" " : "") + $"-ac 2 -ar 44100 \"{f}\"");
+                    if (File.Exists(f)) l.Add(f);
+                }
+                return l;
+            });
+            await ProbeAll(files); if (tab == 1) ShowTab(1);
+        }
+
+        void ShowTab(int i, int c = -1)
+        {
+            if (c < 0) c = i == tab ? cat : 0;
+            tab = i; cat = Math.Min(c, Cats[i].Length - 1); Tabs.Children.Clear(); LeftBody.Children.Clear(); Side.Children.Clear();
             for (int k = 0; k < Tabs_.Length; k++)
             {
                 int kk = k; bool on = k == i;
                 var content = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
                 content.Children.Add(new TextBlock { Text = TabIcons[k], FontSize = 17, HorizontalAlignment = HorizontalAlignment.Center, FontFamily = new FontFamily("Segoe UI Symbol") });
-                content.Children.Add(new TextBlock { Text = Tabs_[k], FontSize = 10.5, Margin = new Thickness(0, 2, 0, 0), HorizontalAlignment = HorizontalAlignment.Center });
-                var b = new Button { Content = content, Padding = new Thickness(0, 7, 0, 7), Margin = new Thickness(2, 0, 2, 0), Background = Br(on ? "#1c2a30" : "transparent"), Foreground = Br(on ? "#25f4ee" : "#aab6bb") };
+                content.Children.Add(new TextBlock { Text = Tabs_[k], FontSize = 10, Margin = new Thickness(0, 2, 0, 0), HorizontalAlignment = HorizontalAlignment.Center });
+                var b = new Button { Content = content, Padding = new Thickness(0, 7, 0, 7), Margin = new Thickness(1, 0, 1, 0), Background = Br(on ? "#1c2a30" : "transparent"), Foreground = Br(on ? "#25f4ee" : "#aab6bb") };
                 b.Click += (_, _) => ShowTab(kk); Tabs.Children.Add(b);
-            }            switch (i)
+            }
+            for (int k = 0; k < Cats[i].Length; k++)
             {
-                case 0: case 1:
-                    var imp = Card(i == 0 ? "＋ Importar" : "＋ Audio", "", null, "#1c282d", () => Import()); LeftBody.Children.Add(imp);
-                    foreach (var m in media.Where(m => i == 0 ? m.Kind != "audio" : m.Kind == "audio")) { var mm = m; LeftBody.Children.Add(Card(Path.GetFileName(m.Path), m.Kind == "image" ? "imagen" : T(m.Dur), m.Thumb, "#142026", () => PreviewMedia(mm), mm)); }
+                int kk = k; bool on = k == cat;
+                var b = new Button { Content = Cats[i][k], HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(12, 8, 12, 8), Margin = new Thickness(0, 0, 0, 3), FontSize = 12.5, Background = Br(on ? "#1c2a30" : "transparent"), Foreground = Br(on ? "#25f4ee" : "#aab6bb") };
+                b.Click += (_, _) => ShowTab(i, kk); Side.Children.Add(b);
+            }
+            void Add(Button b) => LeftBody.Children.Add(b);
+            var cn = Cats[i][cat]; var pt = PreviewThumb();
+            switch (i)
+            {
+                case 0:
+                    Add(Card("＋ Importar", "", null, "#1c282d", () => Import()));
+                    foreach (var m in media.Where(m => m.Kind != "audio" && (cat == 0 || (cat == 1) == (m.Kind == "video")))) { var mm = m; Add(Card(Path.GetFileName(m.Path), m.Kind == "image" ? "imagen" : T(m.Dur), m.Thumb, "#142026", () => PreviewMedia(mm), mm)); }
+                    break;
+                case 1:
+                    if (cat == 2) Add(Card("＋ Audio", "", null, "#1c282d", () => Import())); else EnsureSfx();
+                    foreach (var m in media.Where(m => m.Kind == "audio" && (cat == 2 ? !IsLib(m) : IsLib(m) && Opts.Sounds.Any(d => d.Name == Path.GetFileNameWithoutExtension(m.Path) && d.Cat == cn))))
+                    { var mm = m; Add(Card(Path.GetFileNameWithoutExtension(m.Path), T(m.Dur), null, "#142026", () => PreviewMedia(mm), mm, glyph: "♪", gcol: "#7ee2a8")); }
                     break;
                 case 2:
-                    LeftBody.Children.Add(Card("Texto", "predeterminado", null, "#3a3320", () => AddText("Texto", 64, "white")));
-                    LeftBody.Children.Add(Card("Título", "grande amarillo", null, "#3a3320", () => AddText("Título", 110, "yellow")));
-                    LeftBody.Children.Add(Card("Subtítulo", "pequeño", null, "#3a3320", () => AddText("Subtítulo", 40, "white")));
-                    LeftBody.Children.Add(Card("Rojo", "énfasis", null, "#3a2020", () => AddText("¡Atención!", 80, "red")));
-                    LeftBody.Children.Add(Card("＋ Importar SRT", "subtítulos", null, "#1c282d", ImportSubs));
-                    LeftBody.Children.Add(Card("＋ Pegar guion", "una línea = un subtítulo", null, "#1c282d", ScriptSubs));
-                    LeftBody.Children.Add(Card("Exportar SRT", "clips de texto", null, "#1c282d", ExportSubs));
+                    var texts = cat switch
+                    {
+                        0 => new[] { ("Texto", 64, "white"), ("Título", 110, "yellow"), ("Subtítulo", 40, "white"), ("Pie de foto", 32, "#cfd8dc"), ("¡Atención!", 80, "red"), ("Nuevo", 72, "#25f4ee") },
+                        1 => new[] { ("Amarillo", 72, "#ffd60a"), ("Rojo", 72, "#ff3b30"), ("Cian", 72, "#25f4ee"), ("Verde", 72, "#30d158"), ("Naranja", 72, "#ff9f0a"), ("Rosa", 72, "#ff6fb5"), ("Violeta", 72, "#bf5af2"), ("Azul", 72, "#0a84ff") },
+                        _ => new[] { ("GRAN TÍTULO", 150, "white"), ("Capítulo 1", 90, "#ffd60a"), ("“Una cita”", 56, "#e5e5ea"), ("OFERTA", 110, "#ff3b30"), ("Tu nombre", 48, "white"), ("Gracias por ver", 70, "#30d158"), ("Fin", 120, "white"), ("Suscríbete", 64, "#ff3b30") },
+                    };
+                    foreach (var (n, sz, col) in texts) Add(Card(n, "texto", null, "#2b2a2f", () => AddText(n, sz, col), glyph: "Aa", gcol: col));
                     break;
                 case 3:
-                    foreach (var st in "♥☺☻☼♪♫♠♣♦►◄▲▼■●←↑→↓") { var ch = st.ToString(); LeftBody.Children.Add(Card(ch, "sticker", null, "#2a2a30", () => AddText(ch, 160, "white"))); }
+                    // only glyphs Arial has, because the export draws text with arial.ttf
+                    foreach (var ch in cat switch { 0 => "■□▪▫▬▲►▼◄○●◘◙", 1 => "☺☻☼♀♂♠♣♥♦♪♫∞≈≠≤≥√Ωπ°±½€£©®™", _ => "←↑→↓↔↕↨" }) { var cs = ch.ToString(); Add(Card(cs, "sticker", null, "#2a2a30", () => AddText(cs, 160, "white"), glyph: cs)); }
                     break;
-                case 4: foreach (var n in Opts.Filters.Keys) { var nn = n; LeftBody.Children.Add(Card(n, "filtro", null, Hue(n), () => Edit(sg => sg.Filter = nn, true))); } break;
-                case 5: foreach (var n in Opts.Effects.Keys) { var nn = n; LeftBody.Children.Add(Card(n, "efecto", null, Hue(n), () => Edit(sg => sg.Effect = nn, true))); } break;
+                case 4:
+                    foreach (var n in Opts.Effects.Keys.Where(n => n == "Ninguno" ? cat == 0 : Opts.EffectCat[n] == cn)) { var nn = n; int ix = Opts.Effects.Keys.ToList().IndexOf(n); Add(Card(n, "efecto", pt, Hue(n), () => Edit(sg => sg.Effect = nn, true), fx: pt == null ? null : () => Prev(0, ix))); }
+                    break;
+                case 5:
+                    if (cat < 3)
+                        foreach (var t in Opts.Transitions.Where(t => t.Cat == cn))
+                        {
+                            var tn = t.Name;
+                            Add(Card(tn, tn == "Ninguna" ? "sin transición" : "al inicio del clip", null, "#1f2f3a", () => { Edit(sg => sg.Trans = tn, true); if (sel != null && sel.Trans != "Ninguna") { Seek(Math.Max(0, sel.Start - .4)); if (!playing) Play(); } }, glyph: t.Glyph, gcol: "#25f4ee"));
+                        }
+                    else
+                        foreach (var (n, a, b) in new[] { ("Entrada 0.5s", 0.5, -1.0), ("Entrada 1s", 1.0, -1.0), ("Salida 0.5s", -1.0, 0.5), ("Salida 1s", -1.0, 1.0), ("Entrada y salida", 1.0, 1.0), ("Quitar", 0.0, 0.0) })
+                        { var aa = a; var bb = b; Add(Card(n, "fundido", null, "#1f2f3a", () => Edit(sg => { if (aa >= 0) sg.FadeIn = aa; if (bb >= 0) sg.FadeOut = bb; }, false), glyph: "◐", gcol: "#25f4ee")); }
+                    break;
                 case 6:
-                    foreach (var (n, a, b) in new[] { ("Entrada 0.5s", 0.5, -1.0), ("Entrada 1s", 1.0, -1.0), ("Salida 0.5s", -1.0, 0.5), ("Salida 1s", -1.0, 1.0), ("Entrada y salida", 1.0, 1.0), ("Quitar", 0.0, 0.0) })
-                    { var aa = a; var bb = b; LeftBody.Children.Add(Card(n, "fundido", null, "#1f2f3a", () => Edit(sg => { if (aa >= 0) sg.FadeIn = aa; if (bb >= 0) sg.FadeOut = bb; }, false))); }
+                    Add(Card("＋ Importar SRT", "subtítulos", null, "#1c282d", ImportSubs));
+                    Add(Card("＋ Pegar guion", "una línea = un subtítulo", null, "#1c282d", ScriptSubs));
+                    Add(Card("Exportar SRT", "clips de texto", null, "#1c282d", ExportSubs, glyph: "⤓", gcol: "#25f4ee"));
                     break;
                 case 7:
-                    foreach (var (n, br, co, sa) in new[] { ("Brillante", .1, 1.1, 1.2), ("Contraste", 0, 1.4, 1.0), ("Apagado", -.05, .9, .6), ("Restablecer", 0, 1.0, 1.0) })
-                    { var b1 = br; var c1 = co; var s1 = sa; LeftBody.Children.Add(Card(n, "ajuste", null, "#2a2a30", () => Edit(sg => { sg.Brightness = b1; sg.Contrast = c1; sg.Saturation = s1; }, true))); }
+                    foreach (var n in Opts.Filters.Keys.Where(n => cat == 0 || Opts.FilterCat.GetValueOrDefault(n) == cn)) { var nn = n; int ix = Opts.Filters.Keys.ToList().IndexOf(n); Add(Card(n, "filtro", pt, Hue(n), () => Edit(sg => sg.Filter = nn, true), fx: pt == null ? null : () => Prev(ix, 0))); }
+                    break;
+                case 8:
+                    foreach (var (n, br, co, sa) in new[] { ("Brillante", .1, 1.1, 1.2), ("Contraste", 0, 1.4, 1.0), ("Apagado", -.05, .9, .6), ("Luminoso", .15, 1.0, 1.1), ("Oscuro", -.1, 1.1, 1.0), ("Desaturado", 0, 1.0, .4), ("Saturado", 0, 1.0, 1.6), ("Alto contraste", 0, 1.3, 1.1), ("Restablecer", 0, 1.0, 1.0) })
+                    { var b1 = br; var c1 = co; var s1 = sa; Add(Card(n, "ajuste", null, "#2a2a30", () => Edit(sg => { sg.Brightness = b1; sg.Contrast = c1; sg.Saturation = s1; }, true), glyph: "☼", gcol: "#ffd60a")); }
                     break;
             }
         }
@@ -256,11 +319,12 @@ namespace MiniCut
         static string Hue(string n) { var h = Math.Abs(n.GetHashCode()) % 360; var c = new HslToRgb(h); return c.Hex; }
         record HslToRgb(int H) { public string Hex { get { double s = .35, l = .25, a = s * Math.Min(l, 1 - l); double f(int nn) { var k = (nn + H / 30.0) % 12; return l - a * Math.Max(-1, Math.Min(Math.Min(k - 3, 9 - k), 1)); } return $"#{(int)(f(0) * 255):x2}{(int)(f(8) * 255):x2}{(int)(f(4) * 255):x2}"; } } }
 
-        Button Card(string title, string sub, string thumb, string bg, Action click, Media drag = null)
+        Button Card(string title, string sub, string thumb, string bg, Action click, Media drag = null, Func<System.Windows.Media.Effects.Effect> fx = null, string glyph = null, string gcol = "#e9e9ee")
         {
             var st = new StackPanel { Width = 108 };
             var box = new Border { Height = 66, CornerRadius = new CornerRadius(4), Background = Br(bg), ClipToBounds = true };
-            if (thumb != null) box.Child = new Image { Source = Thumb(thumb), Stretch = Stretch.UniformToFill };
+            if (thumb != null) { var im = new Image { Source = Thumb(thumb), Stretch = Stretch.UniformToFill }; if (fx != null) im.Effect = fx(); box.Child = im; }
+            else if (glyph != null) box.Child = new TextBlock { Text = glyph, FontSize = glyph.Length > 1 ? 24 : 30, Foreground = Br(gcol), FontFamily = new FontFamily("Segoe UI Symbol"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             else if (title.StartsWith("＋")) box.Child = new TextBlock { Text = "＋", FontSize = 30, Foreground = Br("#25f4ee"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             st.Children.Add(box);
             st.Children.Add(new TextBlock { Text = title, FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 4, 0, 0) });
@@ -408,7 +472,7 @@ namespace MiniCut
             { var bg = new Rectangle { Width = w, Height = TrackH[r] - 2, Fill = Br(r % 2 == 0 ? "#0f171b" : "#121c20") }; Canvas.SetTop(bg, TrackTop(r)); TL.Children.Add(bg); }
             foreach (var sg in proj.Segs) { var b = Block(sg); blocks[sg] = b; TL.Children.Add(b); }
             head = new Rectangle { Width = 2, Height = TL.Height, Fill = Br("#ffffff"), IsHitTestVisible = false }; Canvas.SetLeft(head, P * Px); TL.Children.Add(head);
-            Clock.Text = $"{T(P)} / {T(Total)}"; PlayerInfo.Text = $"{proj.Canvas}  ·  {Opts.Size(proj.Canvas).w}×{Opts.Size(proj.Canvas).h}";
+            Clock.Text = Tc(); PlayerInfo.Text = $"{proj.Canvas}  ·  {Opts.Size(proj.Canvas).w}×{Opts.Size(proj.Canvas).h}";
         }
 
         // live volume change (drag on the clip): keeps playing, takes effect in the mixer immediately
@@ -467,6 +531,7 @@ namespace MiniCut
             }
             inner.Children.Add(new TextBlock { Text = (sg.Kind == "audio" ? "♪ " : "") + sg.Name, Foreground = Brushes.White, FontSize = 10, Margin = new Thickness(6, 2, 6, 0), Background = Br("#88000000"), Padding = new Thickness(3, 0, 3, 0) });
             foreach (var kf in sg.Kfs.Select(k => k.T).Distinct()) { var d = new TextBlock { Text = "◆", Foreground = Br("#25f4ee"), FontSize = 9 }; Canvas.SetLeft(d, kf * Px - 4); Canvas.SetTop(d, h - 14); inner.Children.Add(d); }
+            if (sg.Trans != "Ninguna") { var tb = new TextBlock { Text = "⋈ " + sg.Trans, Foreground = Br("#25f4ee"), FontSize = 9.5, Background = Br("#aa000000"), Padding = new Thickness(3, 0, 3, 0) }; Canvas.SetLeft(tb, 2); Canvas.SetTop(tb, h - 28); inner.Children.Add(tb); }
             g.Children.Add(new Border { CornerRadius = new CornerRadius(5), BorderBrush = Br(sg == sel ? "#25f4ee" : "transparent"), BorderThickness = new Thickness(sg == sel ? 2 : 0), IsHitTestVisible = false });
             Canvas.SetLeft(g, sg.Start * Px); Canvas.SetTop(g, TrackTop(sg.Track) + 2);
 
@@ -577,19 +642,27 @@ namespace MiniCut
         void Sync(bool force)
         {
             var (W, H) = Opts.Size(proj.Canvas);
-            foreach (var dead in layers.Keys.Where(k => !proj.Segs.Contains(k) || P < k.Start - 3 || P >= k.End + 0.5).ToList()) DropLayer(dead);
+            foreach (var dead in layers.Keys.Where(k => !proj.Segs.Contains(k) || P < k.Start - 3 || P >= k.End + proj.Hold(k) + 0.5).ToList()) DropLayer(dead);
             foreach (var s in proj.Segs)
             {
-                if (P < s.Start - 2.5 || P >= s.End + 0.3) continue;
+                double hold = proj.Hold(s);
+                if (P < s.Start - 2.5 || P >= s.End + hold + 0.3) continue;
                 if (!layers.TryGetValue(s, out var l)) l = Make(s);
-                bool active = P >= s.Start && P < s.End; double rel = Math.Clamp(P - s.Start, 0, s.Dur);
+                bool active = P >= s.Start && P < s.End, held = !active && P >= s.End && P < s.End + hold; double rel = Math.Clamp(P - s.Start, 0, s.Dur);
                 if (s.Kind != "audio")
                 {
-                    l.El.Opacity = active ? (s.Kind == "text" ? 1 : s.Opacity) * FadeF(s, rel) : 0;
+                    l.El.Opacity = active ? (s.Kind == "text" ? 1 : s.Opacity) * FadeF(s, rel) : held ? s.Opacity : 0;
+                    Panel.SetZIndex(l.El, (10 - s.Track) * 100000 + (int)(s.Start * 10));
                     var sc = s.Kind == "text" ? 1 : Math.Max(0.02, s.Get("scale", rel));
                     l.Sc.ScaleX = (s.Flip ? -sc : sc); l.Sc.ScaleY = sc; l.Ro.Angle = s.Kind == "text" ? 0 : s.Get("rotation", rel); l.Tr.X = s.Get("x", rel); l.Tr.Y = s.Get("y", rel);
                     if (s.Kind == "text") { l.Tb.Text = s.Text; l.Tb.FontSize = s.TextSize; l.Tb.Foreground = Br(s.TextColor == "lime" ? "#00ff00" : s.TextColor); }
                     else ApplyGrade(l, s, W, H);
+                    if (active && s.Kind != "text" && s.Trans != "Ninguna") // incoming clip animates over TransDur (same numbers the export uses)
+                    {
+                        var tr = Opts.TrOf(s.Trans); double pr = Math.Clamp(rel / Math.Max(.05, Math.Min(s.TransDur, s.Dur)), 0, 1), k = tr.S0 + (1 - tr.S0) * pr;
+                        if (tr.Fade) l.El.Opacity *= pr;
+                        l.Sc.ScaleX *= k; l.Sc.ScaleY *= k; l.Tr.X += tr.Dx * W * (1 - pr); l.Tr.Y += tr.Dy * H * (1 - pr);
+                    }
                 }
                 if (l.Me == null || !l.Ready) continue;
                 var me = l.Me; double target = s.Src + rel * s.Speed;
@@ -598,7 +671,9 @@ namespace MiniCut
                 if (!active)
                 {
                     if (l.Playing) { me.Pause(); l.Playing = false; }
-                    l.WasActive = false; if (force || !l.Primed) { me.Position = TimeSpan.FromSeconds(s.Src); l.Primed = true; }
+                    l.WasActive = false;
+                    if (held) { if (force) me.Position = TimeSpan.FromSeconds(s.Src + Math.Max(0, s.Dur - .04) * s.Speed); } // stays on its last frame under the transition
+                    else if (force || !l.Primed) { me.Position = TimeSpan.FromSeconds(s.Src); l.Primed = true; }
                     continue;
                 }
                 if (force || !l.WasActive || (playing && Math.Abs(me.Position.TotalSeconds - target) > 0.35)) me.Position = TimeSpan.FromSeconds(target);
@@ -619,7 +694,7 @@ namespace MiniCut
         void Seek(double t)
         {
             CloseMonitor(null, null);
-            P = Math.Max(0, t); if (head != null) Canvas.SetLeft(head, P * Px); Clock.Text = $"{T(P)} / {T(Total)}";
+            P = Math.Max(0, t); if (head != null) Canvas.SetLeft(head, P * Px); Clock.Text = Tc();
             if (playing) { p0 = P; clock.Restart(); audio.Seek(P); }
             if (sel != null) RefreshDetails();
             Sync(true);
@@ -652,7 +727,7 @@ namespace MiniCut
             if (!playing) return;
             P = Math.Max(p0, p0 + clock.Elapsed.TotalSeconds - (audio.Ready ? AudioEngine.Latency : 0)); // video waits for the audio device latency
             if (P >= Total) { P = Total; StopPlay(); Redraw(); return; }
-            Sync(false); Canvas.SetLeft(head, P * Px); Clock.Text = $"{T(P)} / {T(Total)}";
+            Sync(false); Canvas.SetLeft(head, P * Px); Clock.Text = Tc();
             if (P * Px > TlScroll.HorizontalOffset + TlScroll.ViewportWidth - 40) TlScroll.ScrollToHorizontalOffset(P * Px - 40);
         }
         // ---------- editing actions ----------

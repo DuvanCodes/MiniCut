@@ -23,6 +23,78 @@ namespace MiniCut
         {
             ["Ninguno"] = "", ["Desenfoque"] = "gblur=sigma=6", ["Nitidez"] = "unsharp=5:5:1.5", ["Viñeta"] = "vignette", ["Aberración"] = "rgbashift=rh=-4:bh=4",
             ["Ruido"] = "noise=alls=20:allf=t", ["Pixelar"] = "scale=iw/16:-2,scale=iw*16:-2:flags=neighbor",
+            // the next ones are close ffmpeg approximations of the GPU preview shader (ids follow this order, see Grade.cs)
+            ["Espejo"] = "format=yuv444p,geq=lum='lum(if(gt(X,W/2),W-X,X),Y)':cb='cb(if(gt(X,W/2),W-X,X),Y)':cr='cr(if(gt(X,W/2),W-X,X),Y)'",
+            ["Onda"] = "format=yuv444p,geq=lum='lum(X+8*sin(Y/12+T*3),Y)':cb='cb(X+8*sin(Y/12+T*3),Y)':cr='cr(X+8*sin(Y/12+T*3),Y)'",
+            ["Glitch"] = "rgbashift=rh=-8:bh=8,noise=alls=14:allf=t",
+            ["Escaneo"] = "format=yuv444p,geq=lum='lum(X,Y)*(0.8+0.2*lt(mod(Y,4),2))':cb='cb(X,Y)':cr='cr(X,Y)'",
+            ["Resplandor"] = "gblur=sigma=2.5,eq=brightness=0.05:contrast=1.08:saturation=1.15",
+            ["Bordes"] = "edgedetect=low=0.1:high=0.4",
+        };
+        public static readonly string[] EffectCats = { "Básicos", "Distorsión", "Glitch" };
+        public static readonly Dictionary<string, string> EffectCat = new()
+        {
+            ["Desenfoque"] = "Básicos", ["Nitidez"] = "Básicos", ["Viñeta"] = "Básicos", ["Ruido"] = "Básicos", ["Resplandor"] = "Básicos",
+            ["Pixelar"] = "Distorsión", ["Espejo"] = "Distorsión", ["Onda"] = "Distorsión", ["Bordes"] = "Distorsión",
+            ["Aberración"] = "Glitch", ["Glitch"] = "Glitch", ["Escaneo"] = "Glitch",
+        };
+
+        // color looks defined as numbers so the GPU shader and ffmpeg apply the exact same math: c = c*mul + add, then saturation, then contrast
+        public record Look(string Name, string Cat, double Mr, double Mg, double Mb, double Ar, double Ag, double Ab, double Sat, double Con);
+        public static readonly Look[] NewLooks =
+        {
+            new("Clarendon", "Cine", 1.05, 1.05, 1.12, 0, 0, 0, 1.25, 1.15), new("Nashville", "Cálidos", 1.1, 1.0, .88, .03, .02, .04, 1.1, 1.05),
+            new("Teal y naranja", "Cine", 1.1, 1.0, .92, -.02, .01, .05, 1.2, 1.1), new("Mate", "Retro", 1, 1, 1, .05, .05, .06, .85, .88),
+            new("Película", "Retro", 1.04, 1.0, .92, .02, .02, 0, .9, 1.1), new("Dorado", "Cálidos", 1.15, 1.05, .8, .03, .02, 0, 1.15, 1.05),
+            new("Noir", "B/N", 1, 1, 1, -.05, -.05, -.05, 0, 1.45), new("Pastel", "Creativos", 1, 1, 1, .08, .07, .09, .75, .85),
+            new("Drama", "Cine", .95, .97, 1.05, -.04, -.04, -.04, 1.1, 1.35), new("Fresco", "Fríos", .92, 1.02, 1.1, 0, .02, .03, 1.1, 1.05),
+            new("Atardecer", "Cálidos", 1.2, .95, .8, .04, 0, -.02, 1.3, 1.05), new("Neón", "Creativos", 1.1, .9, 1.25, 0, 0, .04, 1.6, 1.2),
+            new("Bosque", "Fríos", .9, 1.1, .9, 0, .02, 0, 1.1, 1.1), new("Rosa", "Creativos", 1.15, .95, 1.05, .05, .01, .04, 1.1, .95),
+            new("Desvanecido", "Retro", 1, 1, 1, .1, .1, .1, .8, .8), new("Invierno", "Fríos", .88, .98, 1.15, 0, .01, .05, .9, 1.1),
+            new("Verano", "Cálidos", 1.1, 1.05, .9, .03, .03, 0, 1.2, 1.0), new("Contraste B/N", "B/N", 1, 1, 1, 0, 0, 0, 0, 1.3),
+        };
+        public static readonly string[] FilterCats = { "Todos", "Cine", "Cálidos", "Fríos", "B/N", "Retro", "Creativos" };
+        public static readonly Dictionary<string, string> FilterCat = new()
+        {
+            ["Blanco y negro"] = "B/N", ["Sepia"] = "Retro", ["Cálido"] = "Cálidos", ["Frío"] = "Fríos", ["Vívido"] = "Cine", ["Vintage"] = "Retro", ["Cine"] = "Cine", ["Negativo"] = "Creativos",
+        };
+        static Opts()
+        {
+            foreach (var l in NewLooks)
+            {
+                string ch(double m, double a) => $"'clip(val*{F(m)}+{F(a)}*maxval,0,maxval)'";
+                Filters[l.Name] = $"lutrgb=r={ch(l.Mr, l.Ar)}:g={ch(l.Mg, l.Ag)}:b={ch(l.Mb, l.Ab)},eq=saturation={F(l.Sat)}:contrast={F(l.Con)}"; FilterCat[l.Name] = l.Cat;
+            }
+        }
+        static string F(double d) => d.ToString("0.#####", CultureInfo.InvariantCulture);
+
+        // transitions: the incoming clip animates over `Dur` seconds with progress p 0..1: alpha (if Fade) = p, offset = (Dx,Dy)*(1-p) canvas sizes, scale = S0 + (1-S0)*p
+        public record Tr(string Name, string Cat, string Glyph, bool Fade, double Dx, double Dy, double S0);
+        public static readonly Tr[] Transitions =
+        {
+            new("Ninguna", "Básicas", "∅", false, 0, 0, 1), new("Fundido", "Básicas", "◐", true, 0, 0, 1), new("Pop", "Básicas", "●", true, 0, 0, .2),
+            new("Deslizar ←", "Deslizar", "←", false, 1, 0, 1), new("Deslizar →", "Deslizar", "→", false, -1, 0, 1), new("Deslizar ↑", "Deslizar", "↑", false, 0, 1, 1), new("Deslizar ↓", "Deslizar", "↓", false, 0, -1, 1),
+            new("Aparecer zoom", "Zoom", "⊕", true, 0, 0, .5), new("Acercar", "Zoom", "⊖", true, 0, 0, 1.5), new("Zoom fuerte", "Zoom", "⤢", true, 0, 0, 2.5),
+        };
+        public static Tr TrOf(string name) => Transitions.FirstOrDefault(t => t.Name == name) ?? Transitions[0];
+
+        // sounds generated with ffmpeg (original synthesis, no third-party audio): name, category, lavfi source, extra filters
+        public record Sfx(string Name, string Cat, string Src, string Af);
+        public static readonly Sfx[] Sounds =
+        {
+            new("Pitido", "Sonidos", "sine=frequency=1000:duration=0.4", "afade=t=out:st=0.25:d=0.15,volume=0.5"),
+            new("Ding", "Sonidos", "sine=frequency=1320:duration=1.2", "afade=t=out:st=0.05:d=1.1,aecho=0.8:0.7:60:0.4,volume=0.6"),
+            new("Campana", "Sonidos", "aevalsrc='0.4*sin(2*PI*880*t)*exp(-3*t)+0.2*sin(2*PI*1760*t)*exp(-4*t)':d=2:s=44100", ""),
+            new("Pop", "Sonidos", "aevalsrc='0.8*sin(2*PI*(300*t+3000*t*t))*exp(-25*t)':d=0.3:s=44100", ""),
+            new("Whoosh", "Sonidos", "anoisesrc=d=1.2:c=pink:a=0.6", "lowpass=f=2500,afade=t=in:st=0:d=0.5,afade=t=out:st=0.5:d=0.7"),
+            new("Impacto grave", "Sonidos", "aevalsrc='0.9*sin(2*PI*(80*t-30*t*t))*exp(-4*t)':d=1.5:s=44100", ""),
+            new("Clic", "Sonidos", "aevalsrc='0.7*sin(2*PI*2000*t)*exp(-200*t)':d=0.1:s=44100", ""),
+            new("Moneda", "Sonidos", "aevalsrc='0.5*sin(2*PI*if(lt(t,0.08),988,1319)*t)*exp(-4*t)':d=0.8:s=44100", ""),
+            new("Aplauso", "Sonidos", "anoisesrc=d=2:c=white:a=0.7", "highpass=f=1000,lowpass=f=6000,tremolo=f=14:d=0.8,afade=t=in:d=0.2,afade=t=out:st=1.5:d=0.5"),
+            new("Subida", "Sonidos", "aevalsrc='0.4*sin(2*PI*(200*t+150*t*t))*(t/3)':d=3:s=44100", "afade=t=out:st=2.8:d=0.2"),
+            new("Ambiente acorde", "Música", "aevalsrc='0.12*(sin(2*PI*130.81*t)+sin(2*PI*164.81*t)+sin(2*PI*196*t)+sin(2*PI*246.94*t))*(0.8+0.2*sin(2*PI*0.25*t))':d=10:s=44100", "afade=t=in:d=1.5,afade=t=out:st=8:d=2"),
+            new("Pulso 120 bpm", "Música", "aevalsrc='0.8*sin(2*PI*55*t)*exp(-12*mod(t,0.5))':d=8:s=44100", ""),
+            new("Bajo menor", "Música", "aevalsrc='0.25*(sin(2*PI*110*t)+0.5*sin(2*PI*220*t)+0.4*sin(2*PI*261.63*t))*(0.7+0.3*sin(2*PI*0.5*t))':d=10:s=44100", "afade=t=in:d=1,afade=t=out:st=8:d=2"),
         };
     }
 
@@ -39,6 +111,7 @@ namespace MiniCut
         public double Brightness { get; set; } public double Contrast { get; set; } = 1; public double Saturation { get; set; } = 1;
         public string Filter { get; set; } = "Ninguno"; public string Effect { get; set; } = "Ninguno"; public bool Flip { get; set; }
         public double FadeIn { get; set; } public double FadeOut { get; set; }
+        public string Trans { get; set; } = "Ninguna"; public double TransDur { get; set; } = 0.6;
         public string Text { get; set; } = ""; public int TextSize { get; set; } = 64; public string TextColor { get; set; } = "white";
         public List<Kf> Kfs { get; set; } = new();
         public string Name => Kind == "text" ? "T " + Text : System.IO.Path.GetFileName(Path);
@@ -88,7 +161,12 @@ namespace MiniCut
         }
     }
 
-    public class Project { public string Name { get; set; } public string Canvas { get; set; } = "16:9"; public List<Seg> Segs { get; set; } = new(); }
+    public class Project
+    {
+        public string Name { get; set; } public string Canvas { get; set; } = "16:9"; public List<Seg> Segs { get; set; } = new();
+        // a clip whose successor starts a transition right at its end stays on screen (last frame) while the transition runs
+        public double Hold(Seg s) => s.Kind is "video" or "image" ? Segs.Where(n => n != s && n.Track == s.Track && n.Trans != "Ninguna" && n.Kind is "video" or "image" && Math.Abs(n.Start - s.End) < .06).Select(n => Math.Min(n.TransDur, n.Dur)).DefaultIfEmpty(0).Max() : 0;
+    }
 
     public static class Ff
     {
@@ -181,14 +259,14 @@ namespace MiniCut
         // Builds "inputs + -filter_complex_script" args for the whole timeline. sc scales the canvas (preview).
         public static (string args, double total) Build(Project p, double sc, bool audio, string tmp, double? at = null)
         {
-            bool On(Seg s) => at == null || (at.Value >= s.Start && at.Value < s.End);
+            bool On(Seg s) => at == null || (at.Value >= s.Start && at.Value < s.End + p.Hold(s)); // held clips stay under a running transition
             var (W0, H0) = Opts.Size(p.Canvas); int W = (int)(W0 * sc / 2) * 2, H = (int)(H0 * sc / 2) * 2;
             double total = p.Segs.Count == 0 ? 1 : Math.Max(.1, p.Segs.Max(s => s.End));
             var inp = new StringBuilder(); var g = new StringBuilder(); var idx = new Dictionary<Seg, int>(); int n = 0;
             foreach (var s in p.Segs.Where(s => s.Kind != "text" && On(s)))
             {
                 idx[s] = n++;
-                if (at != null) inp.Append(s.Kind == "image" ? $"-loop 1 -framerate 30 -t 0.5 -i \"{s.Path}\" " : $"-ss {F(s.Src + (at.Value - s.Start) * s.Speed)} -t 0.5 -i \"{s.Path}\" ");
+                if (at != null) inp.Append(s.Kind == "image" ? $"-loop 1 -framerate 30 -t 0.5 -i \"{s.Path}\" " : $"-ss {F(s.Src + (Math.Min(at.Value, s.End - .05) - s.Start) * s.Speed)} -t 0.5 -i \"{s.Path}\" ");
                 else inp.Append(s.Kind == "image" ? $"-loop 1 -framerate 30 -t {F(s.Dur)} -i \"{s.Path}\" " : $"-ss {F(s.Src)} -t {F(s.Dur * s.Speed)} -i \"{s.Path}\" ");
             }
             string prev = "b0"; int k = 0;
@@ -204,13 +282,21 @@ namespace MiniCut
                 if (Opts.Effects.GetValueOrDefault(s.Effect, "") != "") c.Add(Opts.Effects[s.Effect]);
                 c.Add("format=rgba");
                 if (s.Opacity < 1) c.Add($"colorchannelmixer=aa={F(s.Opacity)}");
+                var tr = Opts.TrOf(s.Trans); double td = Math.Max(.05, Math.Min(s.TransDur, s.Dur)); bool hasTr = tr.Name != "Ninguna";
+                string tp = $"clip((t-{F(s.Start)})/{F(td)},0,1)";
+                if (hasTr && tr.Fade) c.Add($"fade=t=in:st={F(s.Start)}:d={F(td)}:alpha=1");
                 if (s.FadeIn > 0) c.Add($"fade=t=in:st={F(s.Start)}:d={F(s.FadeIn)}:alpha=1");
                 if (s.FadeOut > 0) c.Add($"fade=t=out:st={F(Math.Max(s.Start, s.End - s.FadeOut))}:d={F(s.FadeOut)}:alpha=1");
-                if (s.Of("scale").Count > 0) { var e = $"max(0.02,{s.Expr("scale", s.Start)})"; c.Add($"scale=w='trunc(iw*{e}/2)*2':h='trunc(ih*{e}/2)*2':eval=frame"); }
+                if (s.Of("scale").Count > 0 || (hasTr && tr.S0 != 1))
+                {
+                    var e = $"max(0.02,({s.Expr("scale", s.Start)})" + (hasTr && tr.S0 != 1 ? $"*({F(tr.S0)}+{F(1 - tr.S0)}*{tp})" : "") + ")";
+                    c.Add($"scale=w='trunc(iw*{e}/2)*2':h='trunc(ih*{e}/2)*2':eval=frame");
+                }
                 else if (s.Scale != 1) c.Add($"scale=trunc(iw*{F(s.Scale)}/2)*2:trunc(ih*{F(s.Scale)}/2)*2");
                 if (s.Of("rotation").Count > 0 || s.Rotation != 0) c.Add($"rotate=a='({s.Expr("rotation", s.Start)})*PI/180':ow='hypot(iw,ih)':oh='hypot(iw,ih)':c=none");
                 g.Append($"[{i}:v]{string.Join(",", c)}[v{i}];");
-                g.Append($"[{prev}][v{i}]overlay=x='(main_w-overlay_w)/2+{s.Expr("x", s.Start, sc)}':y='(main_h-overlay_h)/2+{s.Expr("y", s.Start, sc)}':eval=frame:enable='between(t,{F(s.Start)},{F(s.End)})':shortest=0[b{++k}];");
+                string tdx = hasTr && tr.Dx != 0 ? $"+{F(tr.Dx * W)}*(1-{tp})" : "", tdy = hasTr && tr.Dy != 0 ? $"+{F(tr.Dy * H)}*(1-{tp})" : "";
+                g.Append($"[{prev}][v{i}]overlay=x='(main_w-overlay_w)/2+{s.Expr("x", s.Start, sc)}{tdx}':y='(main_h-overlay_h)/2+{s.Expr("y", s.Start, sc)}{tdy}':eval=frame:enable='between(t,{F(s.Start)},{F(s.End + p.Hold(s))})':shortest=0[b{++k}];");
                 prev = "b" + k;
             }
             foreach (var s in p.Segs.Where(s => s.Kind == "text" && s.Text != "" && On(s)).OrderBy(s => s.Start))
