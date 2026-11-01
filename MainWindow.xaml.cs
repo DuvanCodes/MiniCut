@@ -32,8 +32,8 @@ namespace MiniCut
         readonly Dictionary<(string, int), ImageBrush> cellBrushes = new();
         Media dragging; Rectangle ghost; bool monitorPlaying;
         static readonly string Tmp = Ff.Cache;
-        static readonly string[] Tabs_ = { "Medios", "Audio", "Texto", "Filtros", "Efectos", "Fundidos", "Ajuste" };
-        static readonly string[] TabIcons = { "▣", "♪", "T", "◐", "✦", "⇄", "☼" };
+        static readonly string[] Tabs_ = { "Medios", "Audio", "Texto", "Stickers", "Filtros", "Efectos", "Fundidos", "Ajuste" };
+        static readonly string[] TabIcons = { "▣", "♪", "T", "☺", "◐", "✦", "⇄", "☼" };
 
         Project proj = new();
         readonly List<Media> media = new();
@@ -55,7 +55,6 @@ namespace MiniCut
             foreach (var old in Directory.GetFiles(Tmp, "p*_*.mp4").Concat(Directory.GetFiles(Tmp, "frame_*.png"))) try { File.Delete(old); } catch { }
             playTimer.Tick += (_, _) => Tick(); audio.Init();
             TL.AllowDrop = true; TL.DragOver += TlDragOver; TL.DragLeave += (_, _) => { if (ghost != null) ghost.Visibility = Visibility.Collapsed; }; TL.Drop += TlDrop;
-            foreach (var c in Opts.Canvases) { var cc = c; var b = new Button { Content = c, Padding = new Thickness(8, 4, 8, 4), Tag = c }; b.Click += (_, _) => { Push(); proj.Canvas = cc; CanvasStyle(); Dirty(); }; CanvasBtns.Children.Add(b); }
             for (int i = 0; i < TrackNames.Length; i++) TrackLabels.Children.Add(new TextBlock { Text = TrackNames[i], Height = TrackH[i], Foreground = (Brush)new BrushConverter().ConvertFromString("#8d8d98"), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
             BuildDetails(); CanvasStyle(); ShowTab(0); RefreshDetails(); Redraw(); Sync(true); InitHome();
             Log("Grade shader ok=" + Grade.Ok + " " + Grade.Error);
@@ -71,7 +70,33 @@ namespace MiniCut
         {
             var b = new BitmapImage(); b.BeginInit(); b.CacheOption = BitmapCacheOption.OnLoad; b.CreateOptions = BitmapCreateOptions.IgnoreImageCache; b.UriSource = new Uri(path); b.EndInit(); b.Freeze(); return b;
         }
-        void CanvasStyle() { var (sw, sh) = Opts.Size(proj.Canvas); Stage.Width = sw; Stage.Height = sh; foreach (var k in layers.Keys.ToList()) DropLayer(k); foreach (Button b in CanvasBtns.Children) { b.Background = Br((string)b.Tag == proj.Canvas ? "#25f4ee" : "#1c282d"); b.Foreground = Br((string)b.Tag == proj.Canvas ? "#031211" : "#e9e9ee"); } }
+        void CanvasStyle() { var (sw, sh) = Opts.Size(proj.Canvas); Stage.Width = sw; Stage.Height = sh; foreach (var k in layers.Keys.ToList()) DropLayer(k); AspectBtn.Content = proj.Canvas + " ▾"; DrawGrid(sw, sh); }
+
+        // ---------- player controls: rule-of-thirds grid, quick aspect ratio, fullscreen ----------
+        void DrawGrid(int w, int h)
+        {
+            GridCv.Width = w; GridCv.Height = h; GridCv.Children.Clear();
+            for (int i = 1; i <= 2; i++)
+            {
+                GridCv.Children.Add(new System.Windows.Shapes.Line { X1 = w * i / 3.0, X2 = w * i / 3.0, Y1 = 0, Y2 = h, Stroke = Br("#99ffffff"), StrokeThickness = 2 });
+                GridCv.Children.Add(new System.Windows.Shapes.Line { X1 = 0, X2 = w, Y1 = h * i / 3.0, Y2 = h * i / 3.0, Stroke = Br("#99ffffff"), StrokeThickness = 2 });
+            }
+        }
+        void ToggleGrid(object s, RoutedEventArgs e) { GridOv.Visibility = GridOv.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible; GridBtn.Foreground = Br(GridOv.Visibility == Visibility.Visible ? "#25f4ee" : "#e9e9ee"); }
+        void AspectMenu(object s, RoutedEventArgs e)
+        {
+            var m = new ContextMenu { PlacementTarget = AspectBtn, Placement = System.Windows.Controls.Primitives.PlacementMode.Top };
+            foreach (var c in Opts.Canvases) { var cc = c; var i = new MenuItem { Header = c, IsChecked = c == proj.Canvas }; i.Click += (_, _) => { Push(); proj.Canvas = cc; CanvasStyle(); Dirty(); }; m.Items.Add(i); }
+            m.IsOpen = true;
+        }
+        bool full;
+        void ToggleFull(object s = null, RoutedEventArgs e = null)
+        {
+            full = !full; var v = full ? Visibility.Collapsed : Visibility.Visible;
+            foreach (UIElement c in Editor.Children) if (Grid.GetRow(c) != 1) c.Visibility = v;
+            foreach (UIElement c in Mid.Children) if (Grid.GetColumn(c) != 1) c.Visibility = v;
+            WindowStyle = full ? WindowStyle.None : WindowStyle.SingleBorderWindow; WindowState = full ? WindowState.Maximized : WindowState.Normal;
+        }
 
         // ---------- undo ----------
         string Json() => JsonSerializer.Serialize(proj);
@@ -209,13 +234,16 @@ namespace MiniCut
                     LeftBody.Children.Add(Card("Subtítulo", "pequeño", null, "#3a3320", () => AddText("Subtítulo", 40, "white")));
                     LeftBody.Children.Add(Card("Rojo", "énfasis", null, "#3a2020", () => AddText("¡Atención!", 80, "red")));
                     break;
-                case 3: foreach (var n in Opts.Filters.Keys) { var nn = n; LeftBody.Children.Add(Card(n, "filtro", null, Hue(n), () => Edit(sg => sg.Filter = nn, true))); } break;
-                case 4: foreach (var n in Opts.Effects.Keys) { var nn = n; LeftBody.Children.Add(Card(n, "efecto", null, Hue(n), () => Edit(sg => sg.Effect = nn, true))); } break;
-                case 5:
+                case 3:
+                    foreach (var st in "♥☺☻☼♪♫♠♣♦►◄▲▼■●←↑→↓") { var ch = st.ToString(); LeftBody.Children.Add(Card(ch, "sticker", null, "#2a2a30", () => AddText(ch, 160, "white"))); }
+                    break;
+                case 4: foreach (var n in Opts.Filters.Keys) { var nn = n; LeftBody.Children.Add(Card(n, "filtro", null, Hue(n), () => Edit(sg => sg.Filter = nn, true))); } break;
+                case 5: foreach (var n in Opts.Effects.Keys) { var nn = n; LeftBody.Children.Add(Card(n, "efecto", null, Hue(n), () => Edit(sg => sg.Effect = nn, true))); } break;
+                case 6:
                     foreach (var (n, a, b) in new[] { ("Entrada 0.5s", 0.5, -1.0), ("Entrada 1s", 1.0, -1.0), ("Salida 0.5s", -1.0, 0.5), ("Salida 1s", -1.0, 1.0), ("Entrada y salida", 1.0, 1.0), ("Quitar", 0.0, 0.0) })
                     { var aa = a; var bb = b; LeftBody.Children.Add(Card(n, "fundido", null, "#1f2f3a", () => Edit(sg => { if (aa >= 0) sg.FadeIn = aa; if (bb >= 0) sg.FadeOut = bb; }, false))); }
                     break;
-                case 6:
+                case 7:
                     foreach (var (n, br, co, sa) in new[] { ("Brillante", .1, 1.1, 1.2), ("Contraste", 0, 1.4, 1.0), ("Apagado", -.05, .9, .6), ("Restablecer", 0, 1.0, 1.0) })
                     { var b1 = br; var c1 = co; var s1 = sa; LeftBody.Children.Add(Card(n, "ajuste", null, "#2a2a30", () => Edit(sg => { sg.Brightness = b1; sg.Contrast = c1; sg.Saturation = s1; }, true))); }
                     break;
@@ -642,13 +670,33 @@ namespace MiniCut
             proj.Segs.Insert(proj.Segs.IndexOf(sg) + 1, b); Select(sg); Dirty();
         }
 
+        void Rotate90(object s, RoutedEventArgs e) => Edit(sg => { var v = sg.Get("rotation", Rel) + 90; sg.Set("rotation", v > 180 ? v - 360 : v, Rel); }, true);
+        void Mirror(object s, RoutedEventArgs e) => Edit(sg => sg.Flip = !sg.Flip, true);
+
+        // splits the video at the cursor and inserts a 3 s still of that frame between the halves (later clips on the track shift right)
+        async void Freeze(object s, RoutedEventArgs e)
+        {
+            var sg = sel != null && sel.Kind == "video" && P > sel.Start + .1 && P < sel.End - .1 ? sel : proj.Segs.FirstOrDefault(x => x.Kind == "video" && P > x.Start + .1 && P < x.End - .1);
+            if (sg == null) { Busy.Text = "Coloca el cursor dentro de un clip de vídeo"; return; }
+            var at = (sg.Src + (P - sg.Start) * sg.Speed).ToString("0.###", CultureInfo.InvariantCulture); var png = Path.Combine(Tmp, $"fz_{DateTime.Now.Ticks}.png");
+            Busy.Text = "Congelando fotograma…"; var src = sg.Path;
+            await Task.Run(() => Ff.Exec("ffmpeg", $"-y -v error -nostdin -ss {at} -i \"{src}\" -frames:v 1 \"{png}\""));
+            if (!File.Exists(png)) { Busy.Text = "No se pudo congelar el fotograma"; return; }
+            await ProbeAll(new[] { png }); Busy.Text = "";
+            if (!proj.Segs.Contains(sg) || P <= sg.Start + .1 || P >= sg.End - .1) return;
+            Select(sg); Split();
+            var fz = new Seg { Kind = "image", Path = png, SrcLen = 5, Dur = 3, Track = sg.Track, Start = P };
+            foreach (var x in proj.Segs.Where(x => x.Track == sg.Track && x.Start >= P - 1e-6)) x.Start += fz.Dur;
+            proj.Segs.Add(fz); Select(fz); Dirty();
+        }
+
         void Delete(object s = null, RoutedEventArgs e = null) { if (sel == null) return; Push(); proj.Segs.Remove(sel); sel = null; RefreshDetails(); Dirty(); }
 
         void OnKey(object s, KeyEventArgs e)
         {
             if (Keyboard.FocusedElement is TextBox) return;
             var ctrl = Keyboard.Modifiers == ModifierKeys.Control;
-            if (e.Key == Key.Space) { if (Monitor.Visibility == Visibility.Visible) ToggleMonitor(); else Play(); } else if (e.Key == Key.Delete) Delete(); else if (e.Key == Key.S && !ctrl) Split();
+            if (e.Key == Key.F11 || (e.Key == Key.Escape && full)) ToggleFull(); else if (e.Key == Key.Space) { if (Monitor.Visibility == Visibility.Visible) ToggleMonitor(); else Play(); } else if (e.Key == Key.Delete) Delete(); else if (e.Key == Key.S && !ctrl) Split();
             else if (e.Key == Key.Z && ctrl) Undo(null, null); else if (e.Key == Key.Y && ctrl) Redo(null, null);
             else if (e.Key == Key.Left) Seek(P - 0.1); else if (e.Key == Key.Right) Seek(P + 0.1); else return;
             e.Handled = true;
