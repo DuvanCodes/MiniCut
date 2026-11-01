@@ -56,10 +56,10 @@ namespace MiniCut
             TL.AllowDrop = true; TL.DragOver += TlDragOver; TL.DragLeave += (_, _) => { if (ghost != null) ghost.Visibility = Visibility.Collapsed; }; TL.Drop += TlDrop;
             foreach (var c in Opts.Canvases) { var cc = c; var b = new Button { Content = c, Padding = new Thickness(8, 4, 8, 4), Tag = c }; b.Click += (_, _) => { Push(); proj.Canvas = cc; CanvasStyle(); Dirty(); }; CanvasBtns.Children.Add(b); }
             for (int i = 0; i < TrackNames.Length; i++) TrackLabels.Children.Add(new TextBlock { Text = TrackNames[i], Height = TrackH[i], Foreground = (Brush)new BrushConverter().ConvertFromString("#8d8d98"), FontSize = 11, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
-            BuildDetails(); CanvasStyle(); ShowTab(0); RefreshDetails(); Redraw(); Sync(true);
+            BuildDetails(); CanvasStyle(); ShowTab(0); RefreshDetails(); Redraw(); Sync(true); InitHome();
             Log("Grade shader ok=" + Grade.Ok + " " + Grade.Error);
             // dev hook: MINICUT_AUTOPLAY=<project.minicut> loads it and starts playback
-            Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); ShowTab(0); Redraw(); if (Environment.GetEnvironmentVariable("MINICUT_SELECT") != null) Select(proj.Segs[0]); Play();
+            Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); HideHome(); ShowTab(0); Redraw(); if (Environment.GetEnvironmentVariable("MINICUT_SELECT") != null) Select(proj.Segs[0]); Play();
             };
         }
 
@@ -70,11 +70,11 @@ namespace MiniCut
         {
             var b = new BitmapImage(); b.BeginInit(); b.CacheOption = BitmapCacheOption.OnLoad; b.CreateOptions = BitmapCreateOptions.IgnoreImageCache; b.UriSource = new Uri(path); b.EndInit(); b.Freeze(); return b;
         }
-        void CanvasStyle() { var (sw, sh) = Opts.Size(proj.Canvas); Stage.Width = sw; Stage.Height = sh; foreach (var k in layers.Keys.ToList()) DropLayer(k); foreach (Button b in CanvasBtns.Children) { b.Background = Br((string)b.Tag == proj.Canvas ? "#25f4ee" : "#26262b"); b.Foreground = Br((string)b.Tag == proj.Canvas ? "#031211" : "#e9e9ee"); } }
+        void CanvasStyle() { var (sw, sh) = Opts.Size(proj.Canvas); Stage.Width = sw; Stage.Height = sh; foreach (var k in layers.Keys.ToList()) DropLayer(k); foreach (Button b in CanvasBtns.Children) { b.Background = Br((string)b.Tag == proj.Canvas ? "#25f4ee" : "#1c282d"); b.Foreground = Br((string)b.Tag == proj.Canvas ? "#031211" : "#e9e9ee"); } }
 
         // ---------- undo ----------
         string Json() => JsonSerializer.Serialize(proj);
-        void Push() { undo.Push(Json()); redo.Clear(); }
+        void Push() { undo.Push(Json()); redo.Clear(); Touch(); }
         void Commit(string key) { if (key != lastKey || (DateTime.Now - lastT).TotalSeconds > 1) Push(); lastKey = key; lastT = DateTime.Now; }
         void Restore(string json) { int i = sel == null ? -1 : proj.Segs.IndexOf(sel); proj = JsonSerializer.Deserialize<Project>(json); sel = i >= 0 && i < proj.Segs.Count ? proj.Segs[i] : null; CanvasStyle(); RefreshDetails(); Dirty(); }
         void Undo(object s, RoutedEventArgs e) { if (undo.Count == 0) return; redo.Push(Json()); Restore(undo.Pop()); }
@@ -190,14 +190,14 @@ namespace MiniCut
             tab = i; Tabs.Children.Clear(); LeftBody.Children.Clear();
             for (int k = 0; k < Tabs_.Length; k++)
             {
-                int kk = k; var b = new Button { Content = Tabs_[k], Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(0, 0, 4, 4), Background = Br(k == i ? "#2f2f36" : "transparent"), Foreground = Br(k == i ? "#25f4ee" : "#b8b8c2") };
+                int kk = k; var b = new Button { Content = Tabs_[k], Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(0, 0, 4, 4), Background = Br(k == i ? "#26363c" : "transparent"), Foreground = Br(k == i ? "#25f4ee" : "#b8b8c2") };
                 b.Click += (_, _) => ShowTab(kk); Tabs.Children.Add(b);
             }
             switch (i)
             {
                 case 0: case 1:
-                    var imp = Card(i == 0 ? "＋ Importar" : "＋ Audio", "", null, "#26262b", () => Import()); LeftBody.Children.Add(imp);
-                    foreach (var m in media.Where(m => i == 0 ? m.Kind != "audio" : m.Kind == "audio")) { var mm = m; LeftBody.Children.Add(Card(Path.GetFileName(m.Path), m.Kind == "image" ? "imagen" : T(m.Dur), m.Thumb, "#1d1d22", () => PreviewMedia(mm), mm)); }
+                    var imp = Card(i == 0 ? "＋ Importar" : "＋ Audio", "", null, "#1c282d", () => Import()); LeftBody.Children.Add(imp);
+                    foreach (var m in media.Where(m => i == 0 ? m.Kind != "audio" : m.Kind == "audio")) { var mm = m; LeftBody.Children.Add(Card(Path.GetFileName(m.Path), m.Kind == "image" ? "imagen" : T(m.Dur), m.Thumb, "#142026", () => PreviewMedia(mm), mm)); }
                     break;
                 case 2:
                     LeftBody.Children.Add(Card("Texto", "predeterminado", null, "#3a3320", () => AddText("Texto", 64, "white")));
@@ -351,7 +351,7 @@ namespace MiniCut
                 var tx = new TextBlock { Text = T(t).Substring(0, T(t).Length - 2), FontSize = 10, Foreground = Br("#8d8d98") }; Canvas.SetLeft(tx, t * Px + 3); Canvas.SetTop(tx, 4); TL.Children.Add(tx);
             }
             for (int r = 0; r < TrackNames.Length; r++)
-            { var bg = new Rectangle { Width = w, Height = TrackH[r] - 2, Fill = Br(r % 2 == 0 ? "#15151a" : "#18181d") }; Canvas.SetTop(bg, TrackTop(r)); TL.Children.Add(bg); }
+            { var bg = new Rectangle { Width = w, Height = TrackH[r] - 2, Fill = Br(r % 2 == 0 ? "#0f171b" : "#121c20") }; Canvas.SetTop(bg, TrackTop(r)); TL.Children.Add(bg); }
             foreach (var sg in proj.Segs) { var b = Block(sg); blocks[sg] = b; TL.Children.Add(b); }
             head = new Rectangle { Width = 2, Height = TL.Height, Fill = Br("#ffffff"), IsHitTestVisible = false }; Canvas.SetLeft(head, P * Px); TL.Children.Add(head);
             Clock.Text = $"{T(P)} / {T(Total)}"; PlayerInfo.Text = $"{proj.Canvas}  ·  {Opts.Size(proj.Canvas).w}×{Opts.Size(proj.Canvas).h}";
@@ -573,7 +573,7 @@ namespace MiniCut
         void ToStart(object s, RoutedEventArgs e) => Seek(0);
 
         // edits keep playing (like CapCut); only a stopped player re-seeks everything
-        void Dirty() { Redraw(); RebuildAudio(); Sync(!playing); }
+        void Dirty() { Redraw(); RebuildAudio(); Sync(!playing); Touch(); }
 
         // clips whose audio is decoded and at normal speed go through the mixer (gain up to +6 dB); the rest fall back to MediaElement.Volume
         void RebuildAudio()
@@ -636,23 +636,23 @@ namespace MiniCut
         {
             var m = new ContextMenu();
             void Add(string t, Action a) { var i = new MenuItem { Header = t }; i.Click += (_, _) => a(); m.Items.Add(i); }
-            Add("Nuevo proyecto", () => { Push(); proj = new Project(); sel = null; projFile = null; Title.Text = "Sin título"; CanvasStyle(); RefreshDetails(); Dirty(); });
-            Add("Importar medios…", () => Import()); Add("Abrir proyecto…", OpenProj); Add("Guardar proyecto…", SaveProj);
+            Add("Inicio", () => ShowHome()); Add("Nuevo proyecto", () => _ = NewProject("16:9"));
+            Add("Importar medios…", () => Import()); Add("Guardar como plantilla…", SaveAsTemplate);
+            Add("Abrir archivo .minicut…", OpenProj); Add("Exportar copia del proyecto…", SaveProj);
             m.PlacementTarget = (UIElement)s; m.IsOpen = true;
         }
         void SaveProj()
         {
             var dlg = new SaveFileDialog { Filter = "Proyecto MiniCut|*.minicut", FileName = projFile ?? "proyecto.minicut" };
             if (dlg.ShowDialog() != true) return;
-            File.WriteAllText(dlg.FileName, JsonSerializer.Serialize(proj, new JsonSerializerOptions { WriteIndented = true })); projFile = dlg.FileName; Title.Text = Path.GetFileNameWithoutExtension(projFile);
+            File.WriteAllText(dlg.FileName, JsonSerializer.Serialize(proj, new JsonSerializerOptions { WriteIndented = true })); projFile = dlg.FileName;
         }
         async void OpenProj()
         {
             var dlg = new OpenFileDialog { Filter = "Proyecto MiniCut|*.minicut" };
             if (dlg.ShowDialog() != true) return;
-            proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(dlg.FileName)); projFile = dlg.FileName; Title.Text = Path.GetFileNameWithoutExtension(projFile);
-            await ProbeAll(proj.Segs.Where(x => x.Kind != "text" && File.Exists(x.Path)).Select(x => x.Path).Distinct().ToList());
-            undo.Clear(); redo.Clear(); sel = null; CanvasStyle(); ShowTab(tab); RefreshDetails(); Dirty();
+            try { var p = JsonSerializer.Deserialize<Project>(File.ReadAllText(dlg.FileName)); await NewProject(p.Canvas, p, string.IsNullOrWhiteSpace(p.Name) ? Path.GetFileNameWithoutExtension(dlg.FileName) : p.Name); }
+            catch (Exception ex) { MessageBox.Show("No se pudo abrir: " + ex.Message, "MiniCut"); }
         }
 
         async void Export(object s, RoutedEventArgs e)
@@ -667,6 +667,9 @@ namespace MiniCut
         }
     }
 }
+
+
+
 
 
 

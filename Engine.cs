@@ -88,7 +88,7 @@ namespace MiniCut
         }
     }
 
-    public class Project { public string Canvas { get; set; } = "16:9"; public List<Seg> Segs { get; set; } = new(); }
+    public class Project { public string Name { get; set; } public string Canvas { get; set; } = "16:9"; public List<Seg> Segs { get; set; } = new(); }
 
     public static class Ff
     {
@@ -104,6 +104,15 @@ namespace MiniCut
             int n = (int)Math.Clamp(Math.Ceiling(dur / 2), 1, 80); double step = dur / n; var png = Strip(src);
             if (!File.Exists(png)) Exec("ffmpeg", $"-y -v error -nostdin -i \"{src}\" -an -vf fps=1/{F(step)},scale=-2:80,tile={n}x1 -frames:v 1 \"{png}\"");
             return (n, step);
+        }
+
+        // bigger still frame for project/template cards on the home screen
+        public static string Cover(string path, double at) => System.IO.Path.Combine(Cache, "cv_" + Key(path) + "_" + (int)at + ".jpg");
+        public static string MakeCover(string path, double at, bool image)
+        {
+            var jpg = Cover(path, at); if (File.Exists(jpg)) return jpg;
+            Exec("ffmpeg", $"-y -v error -nostdin {(image ? "" : $"-ss {F(at)} ")}-i \"{path}\" -frames:v 1 -vf scale=-2:240 \"{jpg}\"");
+            return File.Exists(jpg) ? jpg : null;
         }
 
         public static string Raw(string path) => System.IO.Path.Combine(Cache, "au_" + Key(path) + ".raw");
@@ -264,6 +273,7 @@ namespace MiniCut
         }
     }
 }
+
 
 
 
