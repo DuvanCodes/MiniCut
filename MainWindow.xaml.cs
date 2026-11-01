@@ -61,6 +61,7 @@ namespace MiniCut
         {
             InitializeComponent(); Library.Load(); Stage.Children.Add(Lower); Directory.CreateDirectory(Tmp);
             foreach (var old in Directory.GetFiles(Tmp, "p*_*.mp4").Concat(Directory.GetFiles(Tmp, "frame_*.png"))) try { File.Delete(old); } catch { }
+            foreach (var old in Directory.GetFiles(Tmp, "pr_*.raw").Where(f => File.GetLastWriteTime(f) < DateTime.Now.AddDays(-1))) try { File.Delete(old); } catch { } // processed-audio copies (pitch / voice / speed) are only a day-long cache
             playTimer.Tick += (_, _) => Tick(); audio.Init();
             TL.AllowDrop = true; TL.DragOver += TlDragOver; TL.DragLeave += (_, _) => { if (ghost != null) ghost.Visibility = Visibility.Collapsed; }; TL.Drop += TlDrop;
             BuildDetails(); CanvasStyle(); ShowTab(0); RefreshDetails(); Redraw(); Sync(true); InitHome();
