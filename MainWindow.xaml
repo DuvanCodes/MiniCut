@@ -31,10 +31,10 @@
     </Border>
 
     <Grid Grid.Row="1">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="400"/><ColumnDefinition Width="*"/><ColumnDefinition Width="320"/></Grid.ColumnDefinitions>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="400"/><ColumnDefinition Width="*"/><ColumnDefinition Width="370"/></Grid.ColumnDefinitions>
       <Border Background="#0f171b" BorderBrush="#1b272c" BorderThickness="0,0,1,0">
         <DockPanel>
-          <WrapPanel x:Name="Tabs" DockPanel.Dock="Top" Margin="8,8,8,4"/>
+          <UniformGrid x:Name="Tabs" Rows="1" DockPanel.Dock="Top" Margin="6,8,6,6"/>
           <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="8,4"><WrapPanel x:Name="LeftBody"/></ScrollViewer>
         </DockPanel>
       </Border>
@@ -58,6 +58,7 @@
       <Border Grid.Column="2" Background="#0f171b" BorderBrush="#1b272c" BorderThickness="1,0,0,0">
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Text="DETALLES" Style="{StaticResource Lbl}" Margin="14,12,0,6"/>
+          <WrapPanel x:Name="DetailTabs" DockPanel.Dock="Top" Margin="10,0,10,8"/>
           <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Details" Margin="14,0,14,14"/></ScrollViewer>
         </DockPanel>
       </Border>
@@ -109,6 +110,8 @@
   </Grid>
   </Grid>
 </Window>
+
+
 
 
 

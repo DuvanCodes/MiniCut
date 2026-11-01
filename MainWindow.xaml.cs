@@ -32,7 +32,8 @@ namespace MiniCut
         readonly Dictionary<(string, int), ImageBrush> cellBrushes = new();
         Media dragging; Rectangle ghost; bool monitorPlaying;
         static readonly string Tmp = Ff.Cache;
-        static readonly string[] Tabs_ = { "Multimedia", "Audio", "Texto", "Filtros", "Efectos", "Transiciones", "Ajuste" };
+        static readonly string[] Tabs_ = { "Medios", "Audio", "Texto", "Filtros", "Efectos", "Fundidos", "Ajuste" };
+        static readonly string[] TabIcons = { "▣", "♪", "T", "◐", "✦", "⇄", "☼" };
 
         Project proj = new();
         readonly List<Media> media = new();
@@ -190,10 +191,13 @@ namespace MiniCut
             tab = i; Tabs.Children.Clear(); LeftBody.Children.Clear();
             for (int k = 0; k < Tabs_.Length; k++)
             {
-                int kk = k; var b = new Button { Content = Tabs_[k], Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(0, 0, 4, 4), Background = Br(k == i ? "#26363c" : "transparent"), Foreground = Br(k == i ? "#25f4ee" : "#b8b8c2") };
+                int kk = k; bool on = k == i;
+                var content = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
+                content.Children.Add(new TextBlock { Text = TabIcons[k], FontSize = 17, HorizontalAlignment = HorizontalAlignment.Center, FontFamily = new FontFamily("Segoe UI Symbol") });
+                content.Children.Add(new TextBlock { Text = Tabs_[k], FontSize = 10.5, Margin = new Thickness(0, 2, 0, 0), HorizontalAlignment = HorizontalAlignment.Center });
+                var b = new Button { Content = content, Padding = new Thickness(0, 7, 0, 7), Margin = new Thickness(2, 0, 2, 0), Background = Br(on ? "#1c2a30" : "transparent"), Foreground = Br(on ? "#25f4ee" : "#aab6bb") };
                 b.Click += (_, _) => ShowTab(kk); Tabs.Children.Add(b);
-            }
-            switch (i)
+            }            switch (i)
             {
                 case 0: case 1:
                     var imp = Card(i == 0 ? "＋ Importar" : "＋ Audio", "", null, "#1c282d", () => Import()); LeftBody.Children.Add(imp);
@@ -295,11 +299,30 @@ namespace MiniCut
             "speed" => sel.Speed, "fadein" => sel.FadeIn, "fadeout" => sel.FadeOut, _ => sel.Get(k, Rel)
         };
 
+        // like CapCut's property tabs: only the pages that make sense for the selected clip type
+        static readonly Dictionary<string, string[]> TabSections = new() { ["Video"] = new[] { "xform", "xform2" }, ["Ajuste"] = new[] { "adjust" }, ["Audio"] = new[] { "vol" }, ["Velocidad"] = new[] { "speed" }, ["Animación"] = new[] { "fade" }, ["Texto"] = new[] { "text", "xform" } };
+        static string[] TabsFor(string kind) => kind switch { "video" => new[] { "Video", "Ajuste", "Audio", "Velocidad", "Animación" }, "image" => new[] { "Video", "Ajuste", "Animación" }, "audio" => new[] { "Audio", "Velocidad", "Animación" }, "text" => new[] { "Texto" }, _ => Array.Empty<string>() };
+        string detailTab = "Video", detailKind;
+
+        void BuildDetailTabs(string kind)
+        {
+            detailKind = kind; DetailTabs.Children.Clear(); var tabs = TabsFor(kind);
+            if (!tabs.Contains(detailTab) && tabs.Length > 0) detailTab = tabs[0];
+            foreach (var t in tabs)
+            {
+                var tt = t; bool on = t == detailTab;
+                var b = new Button { Content = t, Padding = new Thickness(9, 5, 9, 5), Margin = new Thickness(0, 0, 4, 4), FontSize = 12, Background = Br(on ? "#1c3a40" : "#1c282d"), Foreground = Br(on ? "#25f4ee" : "#cfd8db") };
+                b.Click += (_, _) => { detailTab = tt; BuildDetailTabs(kind); RefreshDetails(); }; DetailTabs.Children.Add(b);
+            }
+        }
+
         void RefreshDetails()
         {
             updating = true;
             bool has = sel != null; var k = sel?.Kind;
-            void Vis(string key, bool v) => secs[key].Visibility = v ? Visibility.Visible : Visibility.Collapsed;
+            if (k != detailKind) BuildDetailTabs(k);
+            var active = TabSections.TryGetValue(detailTab, out var sl) && has ? sl : Array.Empty<string>();
+            void Vis(string key, bool v) => secs[key].Visibility = v && active.Contains(key) ? Visibility.Visible : Visibility.Collapsed;
             Vis("text", k == "text"); Vis("xform", k is "video" or "image" or "text"); Vis("xform2", k is "video" or "image"); Vis("adjust", k is "video" or "image");
             Vis("speed", k is "video" or "audio"); Vis("vol", k is "video" or "audio"); Vis("fade", k is "video" or "image" or "audio");
             if (has)
@@ -667,6 +690,8 @@ namespace MiniCut
         }
     }
 }
+
+
 
 
 
