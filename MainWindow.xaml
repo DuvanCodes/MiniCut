@@ -103,8 +103,8 @@
           <Button Content="❄" Click="Freeze" ToolTip="Congelar fotograma"/><Button Content="⟳" Click="Rotate90" ToolTip="Rotar 90°"/><Button Content="⇋" Click="Mirror" ToolTip="Espejo"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-          <Button x:Name="SnapBtn" Content="🧲" Click="ToggleSnap" ToolTip="Imán: ajustar a los bordes de los clips" Background="#0f4448" Foreground="#25f4ee" Padding="9,4"/><Button Content="⤢" Click="FitZoom" ToolTip="Ajustar la línea de tiempo a la ventana" Padding="9,4" Margin="0,0,14,0"/><TextBlock Text="⊖" Foreground="#8d98a0" VerticalAlignment="Center" Margin="0,0,6,0"/>
-          <Slider x:Name="Zoom" Width="130" Minimum="10" Maximum="150" Value="50" ValueChanged="ZoomChanged"/><TextBlock Text="⊕" Foreground="#8d98a0" VerticalAlignment="Center" Margin="6,0,0,0"/>
+          <Button x:Name="SnapBtn" Content="🧲" Click="ToggleSnap" ToolTip="Imán: ajustar a los bordes de los clips" Background="#0f4448" Foreground="#25f4ee" Padding="9,4"/><Button Content="⤢" Click="FitZoom" ToolTip="Ajustar la línea de tiempo a la ventana" Padding="9,4" Margin="0,0,14,0"/><Button Content="⊖" Click="ZoomOut" ToolTip="Reducir zoom (Ctrl + rueda / Ctrl -)" Background="Transparent" Foreground="#aab6bb" FontSize="16" Padding="6,2" Margin="0,0,4,0"/>
+          <Slider x:Name="Zoom" Width="130" Minimum="10" Maximum="150" Value="50" ValueChanged="ZoomChanged"/><Button Content="⊕" Click="ZoomIn" ToolTip="Ampliar zoom (Ctrl + rueda / Ctrl +)" Background="Transparent" Foreground="#aab6bb" FontSize="16" Padding="6,2" Margin="4,0,0,0"/>
         </StackPanel>
       </Grid>
     </Border>

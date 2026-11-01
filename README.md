@@ -51,3 +51,6 @@ MiniCut no descarga nada de CapCut. Cada persona añade su propio contenido:
 ## Audio y velocidad (v0.10)
 - **Tono** (±12 semitonos), **cambio de voz** (11 efectos sin IA) y **cambiar tono con la velocidad**: cadena de filtros ffmpeg (`Ff.AudioChain`). La vista previa reproduce una copia procesada del audio decodificado; la exportación aplica la misma cadena.
 - **Curvas de velocidad** y **efectos de velocidad**: rampa continua sobre un solo clip (v0.12). El tiempo de salida es la integral de 1/velocidad (`ln` en cada tramo lineal), así que vídeo (`setpts` con `log`), audio (rebanadas con `atempo` exacto) y vista previa coinciden. Dev hooks: `MINICUT_CURVE=<nombre>`, `MINICUT_SPLITAT=<s>`.
+
+## Pruebas de interfaz (v0.13)
+`tools/ui-harness.ps1` lanza MiniCut con `MINICUT_AUTOPLAY` + `MINICUT_DUMP` (vuelca proyecto y selección tras cada cambio), envía ratón/teclado directamente a la ventana (no necesita estar al frente) y pulsa botones con UI Automation. Los arrastres OLE (tarjeta → línea de tiempo) necesitan ratón real con la ventana al frente.
