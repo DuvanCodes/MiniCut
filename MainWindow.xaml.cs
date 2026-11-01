@@ -68,7 +68,7 @@ namespace MiniCut
             Log("Grade shader ok=" + Grade.Ok + " " + Grade.Error);
             // dev hook: MINICUT_AUTOPLAY=<project.minicut> loads it and starts playback
             Loaded += async (_, _) => { var f = Environment.GetEnvironmentVariable("MINICUT_AUTOPLAY"); if (f == null) return; proj = JsonSerializer.Deserialize<Project>(File.ReadAllText(f)); await ProbeAll(proj.Segs.Where(x => x.Kind != "text").Select(x => x.Path).Distinct().ToList()); HideHome(); ShowTab(0); Redraw(); if (Environment.GetEnvironmentVariable("MINICUT_SELECT") != null) Select(proj.Segs[0]);
-                var cv = Environment.GetEnvironmentVariable("MINICUT_CURVE"); if (cv != null) { Select(proj.Segs[0]); ApplyCurve(Opts.Curves.Concat(Opts.SpeedFx).First(c => c.Name == cv).Pts); var sp = Environment.GetEnvironmentVariable("MINICUT_SPLITAT"); if (sp != null) { Seek(double.Parse(sp, CultureInfo.InvariantCulture)); Split(); } File.WriteAllText(f + ".curve.json", JsonSerializer.Serialize(proj)); Log("curve pieces=" + proj.Segs.Count + " total=" + Total.ToString("0.00")); return; }
+                var cv = Environment.GetEnvironmentVariable("MINICUT_CURVE"); if (cv != null) { Select(proj.Segs[0]); ApplyCurve(Opts.Curves.Concat(Opts.SpeedFx).First(c => c.Name == cv).Pts); var sp = Environment.GetEnvironmentVariable("MINICUT_SPLITAT"); if (sp != null) { Seek(double.Parse(sp, CultureInfo.InvariantCulture)); Split(); } File.WriteAllText(f + ".curve.json", JsonSerializer.Serialize(proj)); Log("curve pieces=" + proj.Segs.Count + " total=" + Total.ToString("0.00")); if (Environment.GetEnvironmentVariable("MINICUT_TRACE") != null) { trace = true; Play(); } return; }
                 Play();
             };
         }
@@ -868,7 +868,15 @@ namespace MiniCut
                 }
                 if (l.Me == null || !l.Ready) continue;
                 var me = l.Me; double target = s.Src + s.SrcAt(rel);
-                { var sr = s.Curved ? Math.Clamp(s.SpeedAt(rel), .25, 4) : s.Speed; if (Math.Abs(me.SpeedRatio - sr) > .02) me.SpeedRatio = sr; } bool viaMixer = UsesEngine(s); me.IsMuted = viaMixer || !active || proj.Muted.Contains(s.Track); // the mixer plays this clip; MediaElement only supplies the picture
+                {
+                    var sr = s.Speed;
+                    if (s.Curved) // follow the curve, nudging the rate to pull the picture back to where it should be (MediaElement reacts to rate changes with a delay)
+                    {
+                        sr = Math.Clamp(s.SpeedAt(rel), .25, 4);
+                        if (playing && l.WasActive) sr = Math.Clamp(sr * (1 + Math.Clamp((target - me.Position.TotalSeconds) * 2.5, -.5, .5)), .1, 6);
+                    }
+                    if (Math.Abs(me.SpeedRatio - sr) > .02) me.SpeedRatio = sr;
+                } bool viaMixer = UsesEngine(s); me.IsMuted = viaMixer || !active || proj.Muted.Contains(s.Track); // the mixer plays this clip; MediaElement only supplies the picture
                 me.Volume = active && !viaMixer ? Math.Min(1, s.Get("volume", rel) * FadeF(s, rel)) : 0;
                 if (!active)
                 {
@@ -878,7 +886,7 @@ namespace MiniCut
                     else if (force || !l.Primed) { me.Position = TimeSpan.FromSeconds(s.Src); l.Primed = true; }
                     continue;
                 }
-                if (force || !l.WasActive || (playing && Math.Abs(me.Position.TotalSeconds - target) > 0.35)) me.Position = TimeSpan.FromSeconds(target);
+                if (force || !l.WasActive || (playing && Math.Abs(me.Position.TotalSeconds - target) > (s.Curved ? 0.18 : 0.35))) me.Position = TimeSpan.FromSeconds(target);
                 l.WasActive = true;
                 if (playing && !l.Playing) { me.Play(); l.Playing = true; } else if (!playing && l.Playing) { me.Pause(); l.Playing = false; }
             }
@@ -946,11 +954,13 @@ namespace MiniCut
         }
         void StopPlay() { playing = false; audio.Stop(); playTimer.Stop(); PlayBtn.Content = "▶"; Sync(true); }
 
+        bool trace; double lastTrace;
         void Tick()
         {
             if (!playing) return;
             P = Math.Max(p0, p0 + clock.Elapsed.TotalSeconds - (audio.Ready ? AudioEngine.Latency : 0)); // video waits for the audio device latency
             if (P >= Total) { P = Total; StopPlay(); Redraw(); return; }
+            if (trace && P - lastTrace >= .25 && proj.Segs.Count > 0 && layers.TryGetValue(proj.Segs[0], out var tl) && tl.Me != null) { lastTrace = P; var t0 = proj.Segs[0]; double rl = P - t0.Start; Log($"TRACE P={P:0.00} rel={rl:0.00} playerSrc={tl.Me.Position.TotalSeconds - t0.Src:0.00} expectedSrc={t0.SrcAt(rl):0.00} ratio={tl.Me.SpeedRatio:0.00} expectedSpeed={t0.SpeedAt(rl):0.00} viaMixer={UsesEngine(t0)}"); }
             Sync(false); Canvas.SetLeft(head, P * Px); Clock.Text = Tc();
             if (P * Px > TlScroll.HorizontalOffset + TlScroll.ViewportWidth - 40) TlScroll.ScrollToHorizontalOffset(P * Px - 40);
         }
