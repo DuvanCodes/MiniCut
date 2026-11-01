@@ -37,7 +37,7 @@ namespace MiniCut
         static readonly string[] TabIcons = { "▣", "♪", "T", "☺", "✦", "⋈", "▤", "◐", "☼" };
         // sidebar categories per tab (like CapCut's Import / Media / Yours… list)
         static readonly string[][] Cats = {
-            new[] { "Todos", "Vídeos", "Imágenes" }, new[] { "Sonidos", "Música", "Mis audios" }, new[] { "Básico", "Colores", "Títulos" },
+            new[] { "Todos", "Vídeos", "Imágenes" }, new[] { "Sonidos", "Música", "Mi biblioteca", "Mis audios" }, new[] { "Básico", "Colores", "Títulos" },
             new[] { "Formas", "Símbolos", "Flechas" }, Opts.EffectCats, new[] { "Básicas", "Deslizar", "Zoom", "Fundidos" },
             new[] { "Subtítulos" }, Opts.FilterCats, new[] { "Preajustes" } };
 
@@ -59,7 +59,7 @@ namespace MiniCut
 
         public MainWindow()
         {
-            InitializeComponent(); Stage.Children.Add(Lower); Directory.CreateDirectory(Tmp);
+            InitializeComponent(); Library.Load(); Stage.Children.Add(Lower); Directory.CreateDirectory(Tmp);
             foreach (var old in Directory.GetFiles(Tmp, "p*_*.mp4").Concat(Directory.GetFiles(Tmp, "frame_*.png"))) try { File.Delete(old); } catch { }
             playTimer.Tick += (_, _) => Tick(); audio.Init();
             TL.AllowDrop = true; TL.DragOver += TlDragOver; TL.DragLeave += (_, _) => { if (ghost != null) ghost.Visibility = Visibility.Collapsed; }; TL.Drop += TlDrop;
@@ -224,6 +224,27 @@ namespace MiniCut
         string PreviewThumb() => (sel != null ? media.FirstOrDefault(m => m.Path == sel.Path)?.Thumb : null) ?? media.FirstOrDefault(m => m.Kind != "audio" && m.Thumb != null)?.Thumb;
         static System.Windows.Media.Effects.Effect Prev(int look, int fx) { if (!Grade.Ok) return null; var g = new Grade(); g.Set(0, 1, 1, look, fx, 142, 80, 2.3); return g; }
 
+        void ImportLuts()
+        {
+            var dlg = new OpenFileDialog { Multiselect = true, Filter = "LUT 3D (.cube)|*.cube" }; if (dlg.ShowDialog() != true) return;
+            var err = new List<string>();
+            foreach (var f in dlg.FileNames) try { Library.Import(f); } catch (Exception ex) { err.Add(Path.GetFileName(f) + ": " + ex.Message); }
+            Busy.Text = err.Count == 0 ? "LUT importadas" : string.Join("  ", err); ShowTab(7, Opts.FilterCats.Length - 1);
+        }
+        void PickMusicDir()
+        {
+            var dlg = new OpenFolderDialog { Title = "Carpeta con tu música o sonidos" }; if (dlg.ShowDialog() != true) return;
+            Library.SetMusicDir(dlg.FolderName); musicScanned = null; ShowTab(1, 2);
+        }
+        string musicScanned;
+        async void ScanMusic()
+        {
+            if (Library.MusicDir == null || musicScanned == Library.MusicDir || !Directory.Exists(Library.MusicDir)) return; musicScanned = Library.MusicDir;
+            var exts = new[] { ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac" };
+            var files = await Task.Run(() => Directory.EnumerateFiles(Library.MusicDir, "*.*", SearchOption.AllDirectories).Where(f => exts.Contains(Path.GetExtension(f).ToLower())).Take(200).ToList());
+            await ProbeAll(files); if (tab == 1) ShowTab(1);
+        }
+
         // built-in sounds are synthesized once with ffmpeg (original, license-free) and added to the media pool
         async void EnsureSfx()
         {
@@ -258,7 +279,7 @@ namespace MiniCut
             for (int k = 0; k < Cats[i].Length; k++)
             {
                 int kk = k; bool on = k == cat;
-                var b = new Button { Content = Cats[i][k], HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(12, 8, 12, 8), Margin = new Thickness(0, 0, 0, 3), FontSize = 12.5, Background = Br(on ? "#1c2a30" : "transparent"), Foreground = Br(on ? "#25f4ee" : "#aab6bb") };
+                var b = new Button { Content = Cats[i][k], HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(0, 0, 0, 2), FontSize = 12.5, Background = Br(on ? "#1c2a30" : "transparent"), Foreground = Br(on ? "#25f4ee" : "#aab6bb") };
                 b.Click += (_, _) => ShowTab(i, kk); Side.Children.Add(b);
             }
             void Add(Button b) => LeftBody.Children.Add(b);
@@ -270,8 +291,10 @@ namespace MiniCut
                     foreach (var m in media.Where(m => m.Kind != "audio" && (cat == 0 || (cat == 1) == (m.Kind == "video")))) { var mm = m; Add(Card(Path.GetFileName(m.Path), m.Kind == "image" ? "imagen" : T(m.Dur), m.Thumb, "#142026", () => PreviewMedia(mm), mm)); }
                     break;
                 case 1:
-                    if (cat == 2) Add(Card("＋ Audio", "", null, "#1c282d", () => Import())); else EnsureSfx();
-                    foreach (var m in media.Where(m => m.Kind == "audio" && (cat == 2 ? !IsLib(m) : IsLib(m) && Opts.Sounds.Any(d => d.Name == Path.GetFileNameWithoutExtension(m.Path) && d.Cat == cn))))
+                    if (cat == 3) Add(Card("＋ Audio", "", null, "#1c282d", () => Import()));
+                    else if (cat == 2) { Add(Card("＋ Elegir carpeta", Library.MusicDir == null ? "tu música" : Path.GetFileName(Library.MusicDir.TrimEnd('\\')), null, "#1c282d", PickMusicDir)); ScanMusic(); }
+                    else EnsureSfx();
+                    foreach (var m in media.Where(m => m.Kind == "audio" && (cat == 3 ? !IsLib(m) && !Library.InMusic(m.Path) : cat == 2 ? Library.InMusic(m.Path) : IsLib(m) && Opts.Sounds.Any(d => d.Name == Path.GetFileNameWithoutExtension(m.Path) && d.Cat == cn))))
                     { var mm = m; Add(Card(Path.GetFileNameWithoutExtension(m.Path), T(m.Dur), null, "#142026", () => PreviewMedia(mm), mm, glyph: "♪", gcol: "#7ee2a8")); }
                     break;
                 case 2:
@@ -307,7 +330,14 @@ namespace MiniCut
                     Add(Card("Exportar SRT", "clips de texto", null, "#1c282d", ExportSubs, glyph: "⤓", gcol: "#25f4ee"));
                     break;
                 case 7:
-                    foreach (var n in Opts.Filters.Keys.Where(n => cat == 0 || Opts.FilterCat.GetValueOrDefault(n) == cn)) { var nn = n; int ix = Opts.Filters.Keys.ToList().IndexOf(n); Add(Card(n, "filtro", pt, Hue(n), () => Edit(sg => sg.Filter = nn, true), fx: pt == null ? null : () => Prev(ix, 0))); }
+                    if (cn == "Mis filtros") Add(Card("＋ Importar LUT", ".cube (3D)", null, "#1c282d", ImportLuts));
+                    foreach (var n in Opts.Filters.Keys.Where(n => cat == 0 || Opts.FilterCat.GetValueOrDefault(n) == cn))
+                    {
+                        var nn = n; int ix = Opts.Filters.Keys.ToList().IndexOf(n); bool mine = Library.Luts.ContainsKey(n);
+                        var cb = Card(n, mine ? "mi LUT" : "filtro", mine ? null : pt, Hue(n), () => Edit(sg => sg.Filter = nn, true), fx: pt == null || mine ? null : () => Prev(ix, 0), glyph: mine ? "◨" : null, gcol: "#25f4ee");
+                        if (mine) { var mi = new MenuItem { Header = "Eliminar LUT" }; mi.Click += (_, _) => { Library.Remove(nn); foreach (var sg in proj.Segs.Where(x => x.Filter == nn)) sg.Filter = "Ninguno"; ShowTab(7); Dirty(); }; cb.ContextMenu = new ContextMenu { Items = { mi } }; }
+                        Add(cb);
+                    }
                     break;
                 case 8:
                     foreach (var (n, br, co, sa) in new[] { ("Brillante", .1, 1.1, 1.2), ("Contraste", 0, 1.4, 1.0), ("Apagado", -.05, .9, .6), ("Luminoso", .15, 1.0, 1.1), ("Oscuro", -.1, 1.1, 1.0), ("Desaturado", 0, 1.0, .4), ("Saturado", 0, 1.0, 1.6), ("Alto contraste", 0, 1.3, 1.1), ("Restablecer", 0, 1.0, 1.0) })
@@ -366,7 +396,23 @@ namespace MiniCut
             ((Panel)secs[sec]).Children.Add(g); rows[key] = new RowUi { S = s, L = l, K = kb, Label = label, Fmt = fmt };
         }
 
-        WrapPanel blendPanel, maskPanel; TextBlock blendHint;
+        WrapPanel blendPanel, maskPanel, fontPanel; TextBlock blendHint;
+        void FillFonts()
+        {
+            fontPanel.Children.Clear();
+            foreach (var f in Library.Fonts())
+            {
+                var file = f.File; var b = new Button { Content = f.Label, FontFamily = Library.Family(file), Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(0, 4, 4, 0), FontSize = 13, ToolTip = Path.GetFileName(file) };
+                b.Click += (_, _) => { if (sel == null) return; Push(); sel.Font = file; Dirty(); }; fontPanel.Children.Add(b);
+            }
+            var add = new Button { Content = "＋ Fuente…", Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(0, 4, 4, 0), FontSize = 12, Foreground = Br("#25f4ee") };
+            add.Click += (_, _) =>
+            {
+                var dlg = new OpenFileDialog { Multiselect = true, Filter = "Fuentes|*.ttf;*.otf" }; if (dlg.ShowDialog() != true) return;
+                foreach (var f in dlg.FileNames) try { Library.ImportFont(f); } catch { } FillFonts();
+            };
+            fontPanel.Children.Add(add);
+        }
         void BuildDetails()
         {
             Section("text", "Texto");
@@ -378,6 +424,8 @@ namespace MiniCut
             { var cc = c; var b = new Button { Width = 24, Height = 24, Padding = new Thickness(0), Background = Br(c == "lime" ? "#00ff00" : c) }; b.Click += (_, _) => { if (sel == null) return; Push(); sel.TextColor = cc; Dirty(); }; cols.Children.Add(b); }
             ((Panel)secs["text"]).Children.Add(cols);
             Row("text", "textsize", "Tamaño", 16, 200, false, "0");
+            ((Panel)secs["text"]).Children.Add(new TextBlock { Text = "FUENTE", Style = (Style)FindResource("Lbl"), Margin = new Thickness(0, 10, 0, 0) });
+            fontPanel = new WrapPanel(); ((Panel)secs["text"]).Children.Add(fontPanel); FillFonts();
             Section("xform", "Posición"); Row("xform", "x", "Posición X", -1000, 1000, true, "0"); Row("xform", "y", "Posición Y", -1000, 1000, true, "0");
             Section("xform2", "Transformar"); Row("xform2", "scale", "Escala", 0.1, 4, true); Row("xform2", "rotation", "Rotación °", -180, 180, true, "0"); Row("xform2", "opacity", "Opacidad", 0, 1, false);
             var fl = new CheckBox { Content = "Espejo horizontal", Foreground = Br("#e9e9ee"), Margin = new Thickness(0, 8, 0, 0) };
@@ -698,7 +746,7 @@ namespace MiniCut
                     if (bm > 0 && s.Track != 2 && s.Kind != "text" && Blend.Ok) { l.Bl ??= new Blend { Back = lowerBrush }; l.Bl.Set(bm); l.Top.Effect = l.Bl; } else l.Top.Effect = null;
                     var sc = s.Kind == "text" ? 1 : Math.Max(0.02, s.Get("scale", rel));
                     l.Sc.ScaleX = (s.Flip ? -sc : sc); l.Sc.ScaleY = sc; l.Ro.Angle = s.Kind == "text" ? 0 : s.Get("rotation", rel); l.Tr.X = s.Get("x", rel); l.Tr.Y = s.Get("y", rel);
-                    if (s.Kind == "text") { l.Tb.Text = s.Text; l.Tb.FontSize = s.TextSize; l.Tb.Foreground = Br(s.TextColor == "lime" ? "#00ff00" : s.TextColor); }
+                    if (s.Kind == "text") { l.Tb.Text = s.Text; l.Tb.FontSize = s.TextSize; l.Tb.FontFamily = Library.Family(s.Font); l.Tb.Foreground = Br(s.TextColor == "lime" ? "#00ff00" : s.TextColor); }
                     else ApplyGrade(l, s, W, H);
                     if (active && s.Kind != "text" && s.Trans != "Ninguna") // incoming clip animates over TransDur (same numbers the export uses)
                     {
@@ -731,7 +779,7 @@ namespace MiniCut
             int look = Opts.Filters.Keys.ToList().IndexOf(s.Filter), fx = Opts.Effects.Keys.ToList().IndexOf(s.Effect);
             if (!Grade.Ok || (look <= 0 && fx <= 0 && s.Brightness == 0 && s.Contrast == 1 && s.Saturation == 1 && s.Mask == "Ninguna")) { l.El.Effect = null; return; }
             l.Fx ??= new Grade(); l.El.Effect = l.Fx;
-            l.Fx.Set(s.Brightness, s.Contrast, s.Saturation, Math.Max(0, look), Math.Max(0, fx), W, H, P % 7); l.Fx.SetMask(s);
+            l.Fx.Set(s.Brightness, s.Contrast, s.Saturation, Math.Max(0, look), Math.Max(0, fx), W, H, P % 7); l.Fx.SetMask(s); l.Fx.SetLut(s.Filter);
         }
 
         // ---------- playback ----------

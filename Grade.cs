@@ -15,12 +15,13 @@ namespace MiniCut
     {
         const string Hlsl = @"
 sampler2D input : register(s0);
+sampler2D lut : register(s1); // user .cube LUT packed as N tiles of NxN (see Library.cs)
 float4 P0 : register(c0); // brightness, contrast, saturation, look
 float4 P1 : register(c1); // effect, texelW, texelH, seed
 float4 P2 : register(c2); // look (id >= 9): mul rgb, saturation
 float4 P3 : register(c3); // look (id >= 9): add rgb, contrast
 float4 P4 : register(c4); // mask: type (0 none, 1 linear, 2 mirror, 3 circle, 4 rect, 5 heart), width, height, rotation(rad)
-float4 P5 : register(c5); // mask: feather, round corner, invert, unused
+float4 P5 : register(c5); // mask: feather, round corner, invert; w = LUT size N (0 = no LUT)
 float4 main(float2 uv : TEXCOORD) : COLOR {
   float fx = P1.x; float2 t = P1.yz; float2 u = uv;
   if (fx > 5.5 && fx < 6.5) { float2 g = t * 14; u = (floor(uv / g) + 0.5) * g; }
@@ -59,6 +60,11 @@ float4 main(float2 uv : TEXCOORD) : COLOR {
   else if (look < 7.5 && look > 6.5) { c = smoothstep(0.0, 1.0, c); c = lerp(l.xxx, c, 0.85); }
   else if (look > 7.5 && look < 8.5) c = 1 - c;
   else if (look > 8.5) { c = c * P2.rgb + P3.rgb; float lk = dot(c, float3(0.299, 0.587, 0.114)); c = lerp(lk.xxx, c, P2.w); c = (c - 0.5) * P3.w + 0.5; }
+  if (P5.w > 1.5) {
+    float N = P5.w; float3 cc = saturate(c); float bz = cc.b * (N - 1); float b0 = floor(bz), b1 = min(b0 + 1, N - 1), fb = bz - b0;
+    float gy = (cc.g * (N - 1) + 0.5) / N, rx = cc.r * (N - 1) + 0.5;
+    c = lerp(tex2D(lut, float2((b0 * N + rx) / (N * N), gy)).rgb, tex2D(lut, float2((b1 * N + rx) / (N * N), gy)).rgb, fb);
+  }
   c = (c - 0.5) * P0.y + 0.5 + P0.x;
   l = dot(c, float3(0.299, 0.587, 0.114)); c = lerp(l.xxx, c, P0.z);
   if (fx > 2.5 && fx < 3.5) { float2 d = uv - 0.5; c *= saturate(1 - dot(d, d) * 2.2); }
@@ -118,13 +124,20 @@ float4 main(float2 uv : TEXCOORD) : COLOR {
 
         public static readonly DependencyProperty P4Property = DependencyProperty.Register("P4", typeof(Point4D), typeof(Grade), new UIPropertyMetadata(new Point4D(0, 1, 1, 0), PixelShaderConstantCallback(4)));
         public static readonly DependencyProperty P5Property = DependencyProperty.Register("P5", typeof(Point4D), typeof(Grade), new UIPropertyMetadata(new Point4D(0, 0, 0, 0), PixelShaderConstantCallback(5)));
+        public static readonly DependencyProperty LutProperty = RegisterPixelShaderSamplerProperty("Lut", typeof(Grade), 1);
+        Point4D p5; double lutN;
+        public void SetLut(string filter)
+        {
+            Library.Luts.TryGetValue(filter ?? "", out var l);
+            SetValue(LutProperty, l?.Brush); lutN = l?.N ?? 0; SetValue(P5Property, new Point4D(p5.X, p5.Y, p5.Z, lutN));
+        }
         public void SetMask(Seg s)
         {
             int t = Math.Max(0, Array.IndexOf(Opts.Masks, s.Mask));
-            SetValue(P4Property, new Point4D(t, Math.Max(.01, s.MaskW), Math.Max(.01, s.MaskH), s.MaskRot * Math.PI / 180)); SetValue(P5Property, new Point4D(s.MaskFeather, s.MaskRound, s.MaskInvert ? 1 : 0, 0));
+            SetValue(P4Property, new Point4D(t, Math.Max(.01, s.MaskW), Math.Max(.01, s.MaskH), s.MaskRot * Math.PI / 180)); p5 = new Point4D(s.MaskFeather, s.MaskRound, s.MaskInvert ? 1 : 0, 0); SetValue(P5Property, new Point4D(p5.X, p5.Y, p5.Z, lutN));
         }
 
-        public Grade() { PixelShader = Shader; UpdateShaderValue(P4Property); UpdateShaderValue(P5Property); UpdateShaderValue(InputProperty); UpdateShaderValue(P0Property); UpdateShaderValue(P1Property); UpdateShaderValue(P2Property); UpdateShaderValue(P3Property); }
+        public Grade() { PixelShader = Shader; UpdateShaderValue(P4Property); UpdateShaderValue(P5Property); UpdateShaderValue(LutProperty); UpdateShaderValue(InputProperty); UpdateShaderValue(P0Property); UpdateShaderValue(P1Property); UpdateShaderValue(P2Property); UpdateShaderValue(P3Property); }
         public Brush Input { get => (Brush)GetValue(InputProperty); set => SetValue(InputProperty, value); }
         public void Set(double bright, double contrast, double sat, int look, int fx, double w, double h, double seed)
         {

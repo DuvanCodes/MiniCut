@@ -37,7 +37,7 @@
           <UniformGrid x:Name="Tabs" Rows="1" DockPanel.Dock="Top" Margin="6,8,6,6"/>
           <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="116"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <StackPanel x:Name="Side" Margin="8,6,4,0"/>
+            <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Side" Margin="8,6,4,0"/></ScrollViewer>
             <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Margin="4,4,8,4"><WrapPanel x:Name="LeftBody"/></ScrollViewer>
           </Grid>
         </DockPanel>

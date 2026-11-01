@@ -8,7 +8,7 @@ namespace MiniCut
     {
         // headless: MiniCut.exe --render project.minicut out.mp4   (also used to self-test the engine)
         protected override void OnStartup(StartupEventArgs e)
-        {
+        { Library.Load();
             if (e.Args.Length == 3 && e.Args[0] == "--render")
             {
                 string err; try { err = Ff.Export(JsonSerializer.Deserialize<Project>(File.ReadAllText(e.Args[1])), e.Args[2]); } catch (System.Exception ex) { err = ex.ToString(); }

@@ -67,7 +67,7 @@ namespace MiniCut
         public static Blend BlendOf(string n) => Blends.FirstOrDefault(b => b.Name == n) ?? Blends[0];
         // CapCut masks (names found in videoeditor.dll): linear, mirror, circle, rectangle, heart; each with size W/H, rotation, feather, round corner
         public static readonly string[] Masks = { "Ninguna", "Lineal", "Espejo", "Círculo", "Rectángulo", "Corazón" };
-        public static readonly string[] FilterCats = { "Todos", "Cine", "Cálidos", "Fríos", "B/N", "Retro", "Creativos" };
+        public static readonly string[] FilterCats = { "Todos", "Cine", "Cálidos", "Fríos", "B/N", "Retro", "Creativos", "Mis filtros" };
         public static readonly Dictionary<string, string> FilterCat = new()
         {
             ["Blanco y negro"] = "B/N", ["Sepia"] = "Retro", ["Cálido"] = "Cálidos", ["Frío"] = "Fríos", ["Vívido"] = "Cine", ["Vintage"] = "Retro", ["Cine"] = "Cine", ["Negativo"] = "Creativos",
@@ -126,7 +126,7 @@ namespace MiniCut
         public string Filter { get; set; } = "Ninguno"; public string Effect { get; set; } = "Ninguno"; public bool Flip { get; set; }
         public double FadeIn { get; set; } public double FadeOut { get; set; }
         public string Trans { get; set; } = "Ninguna"; public double TransDur { get; set; } = 0.6;
-        public string Blend { get; set; } = "Normal";
+        public string Blend { get; set; } = "Normal"; public string Font { get; set; } = "";
         public string Mask { get; set; } = "Ninguna"; public double MaskW { get; set; } = .5; public double MaskH { get; set; } = .5; public double MaskRot { get; set; } public double MaskFeather { get; set; } public double MaskRound { get; set; } public bool MaskInvert { get; set; }
 
         // mask coverage 0..1 as an ffmpeg expression in pixels (X,Y,W,H of the clip frame); same maths as the preview shader in Grade.cs
@@ -341,7 +341,7 @@ namespace MiniCut
             }
             foreach (var s in p.Segs.Where(s => s.Kind == "text" && s.Text != "" && On(s) && !p.Hidden.Contains(s.Track)).OrderBy(s => s.Start))
             {
-                g.Append($"[{prev}]drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='{Esc(s.Text)}':fontcolor={s.TextColor}:fontsize={F(s.TextSize * sc)}:box=1:boxcolor=black@0.5:boxborderw=10:x='(w-tw)/2+{s.Expr("x", s.Start, sc)}':y='(h-th)/2+{s.Expr("y", s.Start, sc)}':enable='between(t,{F(s.Start)},{F(s.End)})'[b{++k}];");
+                g.Append($"[{prev}]drawtext=fontfile='{(s.Font != "" && File.Exists(s.Font) ? Library.FfPath(s.Font) : "C\\:/Windows/Fonts/arial.ttf")}':text='{Esc(s.Text)}':fontcolor={s.TextColor}:fontsize={F(s.TextSize * sc)}:box=1:boxcolor=black@0.5:boxborderw=10:x='(w-tw)/2+{s.Expr("x", s.Start, sc)}':y='(h-th)/2+{s.Expr("y", s.Start, sc)}':enable='between(t,{F(s.Start)},{F(s.End)})'[b{++k}];");
                 prev = "b" + k;
             }
             g.Append($"[{prev}]format=yuv420p[vout]");
