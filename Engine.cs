@@ -54,14 +54,15 @@ namespace MiniCut
             new("Verano", "Cálidos", 1.1, 1.05, .9, .03, .03, 0, 1.2, 1.0), new("Contraste B/N", "B/N", 1, 1, 1, 0, 0, 0, 0, 1.3),
         };
         // voice changer (no AI): a pitch shift in semitones plus an ffmpeg filter chain
-        public record Voice(string Name, double Semi, string Af);
+        // Db = level compensation measured against the original on speech (volumedetect), so every voice comes out at the same loudness
+        public record Voice(string Name, double Semi, string Af, double Db = 0);
         public static readonly Voice[] Voices =
         {
-            new("Original", 0, ""), new("Ardilla", 7, ""), new("Voz grave", -6, "lowpass=f=6000"), new("Monstruo", -9, "aecho=0.6:0.5:30:0.4"),
-            new("Robot", 0, "afftfilt=real='hypot(re,im)*cos(0)':imag='hypot(re,im)*sin(0)':win_size=512:overlap=0.75,volume=5,alimiter=limit=0.95"),
-            new("Alienígena", 4, "tremolo=f=9:d=0.7"), new("Eco", 0, "aecho=0.8:0.88:60:0.4"), new("Cueva", 0, "aecho=0.7:0.7:180|360:0.45|0.3"),
-            new("Coro", 0, "chorus=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3"), new("Teléfono", 0, "highpass=f=500,lowpass=f=3000,volume=1.8"),
-            new("Megáfono", 0, "highpass=f=600,lowpass=f=4200,volume=2.2,alimiter=limit=0.9"),
+            new("Original", 0, ""), new("Ardilla", 7, "", .3), new("Voz grave", -6, "lowpass=f=6000", .3), new("Monstruo", -9, "aecho=0.6:0.5:30:0.4", 9.1),
+            new("Robot", 0, "afftfilt=real='hypot(re,im)*cos(0)':imag='hypot(re,im)*sin(0)':win_size=512:overlap=0.75", 14),
+            new("Alienígena", 4, "tremolo=f=9:d=0.7", 3.3), new("Eco", 0, "aecho=0.8:0.88:60:0.4", 2.5), new("Cueva", 0, "aecho=0.7:0.7:180|360:0.45|0.3", 4.1),
+            new("Coro", 0, "chorus=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3", -1.1), new("Teléfono", 0, "highpass=f=500,lowpass=f=3000", 11.2),
+            new("Megáfono", 0, "highpass=f=600,lowpass=f=4200", 11.2),
         };
         public static Voice VoiceOf(string n) => Voices.FirstOrDefault(v => v.Name == n) ?? Voices[0];
 
@@ -317,6 +318,7 @@ namespace MiniCut
             var v = Opts.VoiceOf(s.Voice); var l = new List<string>(); double semi = s.Pitch + v.Semi;
             if (Math.Abs(semi) > .01) { double f = Math.Pow(2, semi / 12); l.Add($"asetrate={F(44100 * f)}"); l.Add("aresample=44100"); l.Add(Atempo(1 / f)); }
             if (v.Af != "") l.Add(v.Af);
+            if (v.Name != "Original") { if (v.Db != 0) l.Add($"volume={F(v.Db)}dB"); l.Add("alimiter=limit=0.93"); } // level-matched, and never clips
             if (s.Speed != 1) l.Add(s.PitchWithSpeed ? $"asetrate={F(44100 * s.Speed)},aresample=44100" : Atempo(s.Speed));
             return string.Join(",", l);
         }

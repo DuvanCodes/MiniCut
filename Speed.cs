@@ -30,10 +30,16 @@ namespace MiniCut
             curvePts = pts.ToArray(); foreach (var d in curveDots) curveCv.Children.Remove(d); curveDots.Clear();
             for (int i = 0; i < curvePts.Length; i++)
             {
-                int ix = i; var d = new Ellipse { Width = 12, Height = 12, Fill = Brushes.White, Stroke = Br("#25f4ee"), StrokeThickness = 2, Cursor = Cursors.SizeNS };
+                int ix = i; var d = new Ellipse { Width = 12, Height = 12, Fill = Brushes.White, Stroke = Br("#25f4ee"), StrokeThickness = 2, Cursor = Cursors.SizeAll, ToolTip = "Arrastra · clic derecho para quitar" };
                 d.MouseLeftButtonDown += (_, e) => { d.CaptureMouse(); e.Handled = true; };
-                d.MouseMove += (_, e) => { if (!d.IsMouseCaptured) return; curvePts[ix].v = CurveV(e.GetPosition(curveCv).Y); LayoutCurve(); };
+                d.MouseMove += (_, e) =>
+                {
+                    if (!d.IsMouseCaptured) return; var p = e.GetPosition(curveCv); curvePts[ix].v = CurveV(p.Y);
+                    if (ix > 0 && ix < curvePts.Length - 1) curvePts[ix].u = Math.Clamp((p.X - 10) / (CW - 20), curvePts[ix - 1].u + .03, curvePts[ix + 1].u - .03); // end points keep their place
+                    LayoutCurve();
+                };
                 d.MouseLeftButtonUp += (_, _) => d.ReleaseMouseCapture();
+                d.MouseRightButtonDown += (_, e) => { e.Handled = true; if (curvePts.Length > 2 && ix > 0 && ix < curvePts.Length - 1) SetCurve(curvePts.Where((_, k) => k != ix).ToArray()); };
                 curveDots.Add(d); curveCv.Children.Add(d);
             }
             LayoutCurve();
@@ -45,14 +51,20 @@ namespace MiniCut
             foreach (var c in Opts.Curves) { var pts = c.Pts; var b = new Button { Content = c.Name, Padding = new Thickness(9, 5, 9, 5), Margin = new Thickness(0, 4, 4, 0), FontSize = 12 }; b.Click += (_, _) => SetCurve(pts); pre.Children.Add(b); }
             sec.Children.Add(pre);
             curveCv = new Canvas { Width = CW, Height = CH, Background = Br("#121c20"), Margin = new Thickness(0, 10, 0, 0), HorizontalAlignment = HorizontalAlignment.Left, ClipToBounds = true };
+            curveCv.MouseLeftButtonDown += (_, e) => // click on an empty spot adds a point there
+            {
+                var p = e.GetPosition(curveCv); double u = Math.Clamp((p.X - 10) / (CW - 20), .02, .98);
+                if (curvePts.Any(q => Math.Abs(q.u - u) < .03)) return;
+                SetCurve(curvePts.Append((u, CurveV(p.Y))).OrderBy(q => q.u).ToArray());
+            };
             foreach (var (v, lbl) in new[] { (.25, "0.25x"), (1.0, "1x"), (4.0, "4x") })
             {
-                curveCv.Children.Add(new Line { X1 = 0, X2 = CW, Y1 = CurveY(v), Y2 = CurveY(v), Stroke = Br(v == 1 ? "#3a4a50" : "#232f34"), StrokeThickness = 1 });
-                var t = new TextBlock { Text = lbl, FontSize = 9, Foreground = Br("#6b7a80") }; Canvas.SetLeft(t, 2); Canvas.SetTop(t, CurveY(v) - (v == 4 ? 0 : 13)); curveCv.Children.Add(t);
+                curveCv.Children.Add(new Line { X1 = 0, X2 = CW, Y1 = CurveY(v), Y2 = CurveY(v), Stroke = Br(v == 1 ? "#3a4a50" : "#232f34"), StrokeThickness = 1, IsHitTestVisible = false });
+                var t = new TextBlock { Text = lbl, FontSize = 9, Foreground = Br("#6b7a80"), IsHitTestVisible = false }; Canvas.SetLeft(t, 2); Canvas.SetTop(t, CurveY(v) - (v == 4 ? 0 : 13)); curveCv.Children.Add(t);
             }
-            curveLine = new Polyline { Stroke = Br("#25f4ee"), StrokeThickness = 2 }; curveCv.Children.Add(curveLine); sec.Children.Add(curveCv);
+            curveLine = new Polyline { Stroke = Br("#25f4ee"), StrokeThickness = 2, IsHitTestVisible = false }; curveCv.Children.Add(curveLine); sec.Children.Add(curveCv);
             SetCurve(Opts.Curves[0].Pts);
-            sec.Children.Add(new TextBlock { Style = (Style)FindResource("Lbl"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Text = "Elige una curva, arrastra los puntos arriba/abajo (0.25x–4x) y aplícala. El clip se corta en 12 trozos con velocidad constante." });
+            sec.Children.Add(new TextBlock { Style = (Style)FindResource("Lbl"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Text = "Elige una curva y edítala: arrastra un punto (0.25x–4x), clic en un hueco para añadir uno, clic derecho sobre un punto para quitarlo. Al aplicarla, el clip se corta en trozos de ~0,5 s con velocidad constante, así que la rampa sale suave." });
             var ap = new Button { Content = "Aplicar curva", Style = (Style)FindResource("Accent"), HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) }; ap.Click += (_, _) => ApplyCurve(curvePts); sec.Children.Add(ap);
         }
         void BuildSpeedFxUi()
@@ -67,7 +79,7 @@ namespace MiniCut
         {
             var s0 = sel; if (s0 == null || s0.Kind is not ("video" or "audio")) { Busy.Text = "Selecciona un clip de vídeo o audio"; return; }
             if (proj.Locked.Contains(s0.Track)) { Busy.Text = "La pista está bloqueada"; return; }
-            Push(); int n = 12; double used = s0.Dur * s0.Speed, oldEnd = s0.End, t = s0.Start, ss = used / n; var json = JsonSerializer.Serialize(s0); var pieces = new List<Seg>();
+            Push(); double used0 = s0.Dur * s0.Speed; int n = Math.Clamp((int)Math.Ceiling(used0 / 0.5), 8, 40); double used = s0.Dur * s0.Speed, oldEnd = s0.End, t = s0.Start, ss = used / n; var json = JsonSerializer.Serialize(s0); var pieces = new List<Seg>();
             for (int i = 0; i < n; i++)
             {
                 var p = JsonSerializer.Deserialize<Seg>(json); p.Kfs.Clear(); p.Speed = Math.Round(Math.Clamp(Opts.CurveAt(pts, (i + .5) / n), .25, 4), 2);
